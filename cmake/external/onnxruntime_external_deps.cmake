@@ -294,6 +294,12 @@ if (onnxruntime_BUILD_UNIT_TESTS)
   onnxruntime_fetchcontent_makeavailable(googletest)
 endif()
 
+if(TARGET flatc)
+  if(HAS_UNUSED_BUT_SET_VARIABLE)
+    target_compile_options(flatc PRIVATE -Wno-error=unused-but-set-variable)
+  endif()
+endif()
+
 if(Protobuf_FOUND)
   message("Protobuf version: ${Protobuf_VERSION}")
 else()

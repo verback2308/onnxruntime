@@ -8,11 +8,18 @@
 #ifdef _MSC_VER
 #include <codecvt>
 #include <locale.h>
-#elif defined(__APPLE__) || defined(__ANDROID__)
+#elif defined(__ANDROID__)
 #include <codecvt>
 #else
 #include <limits>
 #include <iconv.h>
+
+#if defined(__APPLE__)
+// Specify -liconv here so we don't need to add link flags for libiconv elsewhere, e.g., for iOS apps that statically
+// link to ORT.
+asm(".linker_option \"-liconv\"");
+#endif  // __APPLE__
+
 #endif  // _MSC_VER
 
 #include <locale>
@@ -76,7 +83,7 @@ using Utf8Converter = std::wstring_convert<std::codecvt_utf8<wchar_t>>;
 
 const std::string default_locale("en-US");
 
-#else  // MS_VER
+#else  // _MSC_VER
 
 class Locale {
  public:
@@ -110,11 +117,11 @@ class Locale {
   std::locale loc_;
 };
 
-#if defined(__APPLE__) || defined(__ANDROID__)
+#if defined(__ANDROID__)
 using Utf8Converter = std::wstring_convert<std::codecvt_utf8<wchar_t>>;
 #else
 
-// All others (Linux)
+// All others (not Windows or Android)
 class Utf8Converter {
  public:
   Utf8Converter(const std::string&, const std::wstring&) {}
@@ -186,11 +193,11 @@ class Utf8Converter {
   }
 };
 
-#endif  // __APPLE__
+#endif  // __ANDROID__
 
 const std::string default_locale("en_US.UTF-8");  // All non-MS
 
-#endif  // MS_VER
+#endif  // _MSC_VER
 
 template <class ForwardIter>
 Status CopyCaseAction(ForwardIter first, ForwardIter end, OpKernelContext* ctx,
