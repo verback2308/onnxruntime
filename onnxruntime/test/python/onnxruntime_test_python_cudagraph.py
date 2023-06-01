@@ -94,8 +94,7 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
             io_binding.bind_ortvalue_input("X", x_ortvalue)
             io_binding.bind_ortvalue_output("Y", y_ortvalue)
 
-            # Two regular runs for the necessary memory allocation and cuda graph capturing
-            session.run_with_iobinding(io_binding)
+            # One regular run for the necessary memory allocation and cuda graph capturing
             session.run_with_iobinding(io_binding)
             expected_y = np.array([[5.0], [11.0], [17.0]] * INPUT_SIZE, dtype=np.float32)
             np.testing.assert_allclose(expected_y, y_ortvalue.numpy(), rtol=1e-05, atol=1e-05)
@@ -119,50 +118,41 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
                 atol=1e-05,
             )
 
-    def testRunDiffusionModelWithCudaGraph(self):
+    def testMinimalRunsWithCudaGraph(self):
         if "CUDAExecutionProvider" in onnxrt.get_available_providers():
-            providers = [("CUDAExecutionProvider", {"enable_cuda_graph": True})]
-
-            test_model_path = get_name("tiny_unet.onnx")
-            with open(get_name("tiny_unet_test_data_1.pickle"), "rb") as file:
-                test_data_1 = pickle.load(file)
-            with open(get_name("tiny_unet_test_data_2.pickle"), "rb") as file:
-                test_data_2 = pickle.load(file)
+            providers = [
+                ("CUDAExecutionProvider", {"enable_cuda_graph": True, "arena_extend_strategy": "kSameAsRequested"})
+            ]
+            test_model_path = get_name("squeezenet/model.onnx")
 
             io_shape = {
-                "sample": list(test_data_1["sample"].shape),
-                "timestep": list(test_data_1["timestep"].shape),
-                "encoder_hidden_states": list(test_data_1["encoder_hidden_states"].shape),
-                "out_sample": list(test_data_1["out_sample"].shape),
+                "data_0": [1, 3, 224, 224],
+                "softmaxout_1": [1, 1000, 1, 1],
             }
 
+            # TODO: set arena intial chunk size to a small value when there is python API for that.
+            # In this way, this test could easily detect whether there is memory allocation during cuda graph catpure.
+            # Right now, we can manually change the following line to verify that minimal 2 runs is required for capture:
+            #    https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/framework/bfc_arena.h#L59
+
             session = onnxrt.InferenceSession(test_model_path, providers=providers)
+            inputs = {"data_0": np.random.randint(0, 256, size=[1, 3, 224, 224]).astype(np.float32)}
+            expected_output = session.run(None, inputs)[0]
+
             cuda_graph_helper = CudaGraphHelper(session, io_shape)
-            inputs = {key: test_data_1[key] for key in cuda_graph_helper.input_names}
+            inputs = {"data_0": np.ones(io_shape["data_0"], dtype=np.float32)}
             cuda_graph_helper.update_inputs(inputs)
 
-            # Two regular runs for the necessary memory allocation and cuda graph capturing
+            # One regular run for the necessary memory allocation and cuda graph capturing
             io_binding = cuda_graph_helper.io_binding
             session.run_with_iobinding(io_binding)
-            session.run_with_iobinding(io_binding)
-            output = cuda_graph_helper.get_output("out_sample")
-            expected_output = test_data_1["out_sample"]
-            np.testing.assert_allclose(expected_output[0], output[0], rtol=3e-01, atol=3e-01)
+            output = cuda_graph_helper.get_output("softmaxout_1")
+            np.testing.assert_allclose(expected_output, output, rtol=1e-02, atol=1e-02)
 
             # After capturing, CUDA graph replay happens from this Run onwards
             session.run_with_iobinding(io_binding)
-            output = cuda_graph_helper.get_output("out_sample")
-            np.testing.assert_allclose(expected_output, output, rtol=3e-01, atol=3e-01)
-
-            # Update input and then replay CUDA graph
-            inputs = {key: test_data_2[key] for key in cuda_graph_helper.input_names}
-            cuda_graph_helper.update_inputs(inputs)
-
-            session.run_with_iobinding(io_binding)
-            output = cuda_graph_helper.get_output("out_sample")
-            expected_output = test_data_2["out_sample"]
-            self.assertLess(np.median(expected_output - output), 1e-3)
-            np.testing.assert_allclose(expected_output, output, rtol=3e-01, atol=3e-01)
+            output = cuda_graph_helper.get_output("softmaxout_1")
+            np.testing.assert_allclose(expected_output, output, rtol=1e-02, atol=1e-02)
 
 
 if __name__ == "__main__":
