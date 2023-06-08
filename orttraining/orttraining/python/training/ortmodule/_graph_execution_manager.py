@@ -197,6 +197,11 @@ class GraphExecutionManager(GraphExecutionInterface):
             self._enable_compute_optimizer
             and ortmodule._defined_from_envvar("ORTMODULE_ENABLE_SPARSE_OPTIMIZER", 1, warn=True) == 1
         )
+        self._enable_embedding_sparse_optimizer = (
+            self._enable_compute_optimizer
+            and self._enable_sparse_optimizer
+            and ortmodule._defined_from_envvar("ORTMODULE_ENABLE_EMBEDDING_SPARSE_OPTIMIZER", 0, warn=True) == 1
+        )
 
         self._print_input_density = ortmodule._defined_from_envvar("ORTMODULE_PRINT_INPUT_DENSITY", 0, warn=True) == 1
 
@@ -566,7 +571,7 @@ class GraphExecutionManager(GraphExecutionInterface):
                     graph_transformer_config.sparse_label_input_names = label_sparsity_results
                     logger.info(f"Label sparsity based optimization is on for {label_sparsity_results}")
 
-                if len(embed_sparsity_results) > 0:
+                if self._enable_embedding_sparse_optimizer and len(embed_sparsity_results) > 0:
                     graph_transformer_config.sparse_embedding_input_names = embed_sparsity_results
                     logger.info(f"Embedding sparsity based optimization is on for {embed_sparsity_results}")
 
