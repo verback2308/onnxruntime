@@ -25,7 +25,9 @@ ONNX_OPERATOR_KERNEL_EX(
         .InputMemoryType(OrtMemTypeCPUInput, 5)    // 'length_penalty' needs to be on CPU
         .InputMemoryType(OrtMemTypeCPUInput, 6)    // 'repetition_penalty' needs to be on CPU
         .InputMemoryType(OrtMemTypeCPUInput, 9)    // 'attention_mask' needs to be on CPU
+        .InputMemoryType(OrtMemTypeCPUInput, 10)   // 'decoder_input_ids' needs to be on CPU
         .OutputMemoryType(OrtMemTypeCPUOutput, 0)  // 'sequences' output on CPU
+        .InputMemoryType(OrtMemTypeCPUInput, 11)   // 'logits_processor' needs to be on CPU
         .OutputMemoryType(OrtMemTypeCPUOutput, 1)  // 'sequences_scores' output on CPU
         .TypeConstraint("T", {DataTypeImpl::GetTensorType<float>(),
                               DataTypeImpl::GetTensorType<MLFloat16>()}),
@@ -35,7 +37,9 @@ transformers::CudaTensorConsoleDumper g_cuda_dumper;
 
 BeamSearch::BeamSearch(const OpKernelInfo& info)
     : onnxruntime::contrib::transformers::BeamSearch(info) {
-  SetDeviceHelpers(GenerationCudaDeviceHelper::AddToFeeds,
+  SetDeviceHelpers(GenerationCudaDeviceHelper::ReorderPastState,
+                   GenerationCudaDeviceHelper::InitCacheIndir,
+                   GenerationCudaDeviceHelper::AddToFeeds,
                    GenerationCudaDeviceHelper::TopK,
                    GenerationCudaDeviceHelper::DeviceCopy<float>,
                    GenerationCudaDeviceHelper::DeviceCopy<int32_t>,
@@ -54,6 +58,13 @@ BeamSearch::BeamSearch(const OpKernelInfo& info)
                                   GenerationCudaDeviceHelper::ExpandBuffer<MLFloat16>);
 
   SetConsoleDumper(&g_cuda_dumper);
+
+#ifndef USE_ROCM
+  cuda_device_prop_ = &reinterpret_cast<const CUDAExecutionProvider*>(info.GetExecutionProvider())->GetDeviceProp();
+
+  cuda_device_arch_ = static_cast<const cudaDeviceProp*>(cuda_device_prop_)->major * 100 +
+                      static_cast<const cudaDeviceProp*>(cuda_device_prop_)->minor * 10;
+#endif
 }
 
 Status BeamSearch::ComputeInternal(OpKernelContext* context) const {

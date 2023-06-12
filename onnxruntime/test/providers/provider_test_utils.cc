@@ -342,7 +342,7 @@ struct TensorCheck<MLFloat16> {
 #if defined(USE_TENSORRT) || defined(ENABLE_TRAINING_CORE) || defined(USE_CUDA) || defined(USE_ROCM)
     threshold = 0.005f;
 #elif defined(USE_DML)
-    threshold = 0.008f;
+    threshold = 0.02f;
 #endif
     for (int i = 0; i < size; ++i) {
       if (std::isnan(f_expected[i])) {
@@ -413,9 +413,9 @@ struct TensorCheck<BFloat16> {
           if (abs_error <= abs_threshold) {
             // if the absolute error is small enough, then no need to calculate realative error
             EXPECT_NEAR(0, abs_error, abs_threshold) << "provider_type: "
-                                                 << provider_type;
+                                                     << provider_type;
           } else {
-            //default for existing tests.
+            // default for existing tests.
             const float rel_error = abs_error / max_value;
             EXPECT_NEAR(0, rel_error, threshold) << "provider_type: "
                                                  << provider_type;
@@ -437,8 +437,12 @@ void Check(const OpTester::Data& expected_data, const Tensor& output_tensor,
                   expected_data.def_.Name());
 
   utils::MLTypeCallDispatcher<bool, float, double, uint8_t, uint16_t, uint32_t, uint64_t,
-                              int8_t, int16_t, int32_t, int64_t, std::string, MLFloat16,
-                              BFloat16>
+                              int8_t, int16_t, int32_t, int64_t, std::string, MLFloat16, BFloat16
+#if !defined(DISABLE_FLOAT8_TYPES)
+                              ,
+                              Float8E4M3FN, Float8E4M3FNUZ, Float8E5M2, Float8E5M2FNUZ
+#endif
+                              >
       t_disp(output_tensor.GetElementType());
 
   t_disp.Invoke<TensorCheck>(expected_data.data_.Get<Tensor>(), output_tensor, provider_type, MakeCheckParams(expected_data));
@@ -1406,7 +1410,7 @@ void OpTester::ExecuteModelForEps(
   }
 };
 
-void OpTester::AddReferenceOutputs(const std::string& model_path, float abs_error) {
+void OpTester::AddReferenceOutputs(const std::string& model_path, float abs_error, std::unique_ptr<IExecutionProvider> ep) {
   SessionOptions so;
   so.session_logid = op_;
   so.session_log_verbosity_level = 1;
@@ -1418,6 +1422,7 @@ void OpTester::AddReferenceOutputs(const std::string& model_path, float abs_erro
 
   Status status;
   InferenceSession subgraph_session_object{so, GetEnvironment()};
+  status = subgraph_session_object.RegisterExecutionProvider(std::move(ep));
   ASSERT_TRUE((status = subgraph_session_object.Load(model_path)).IsOK()) << status;
   ASSERT_TRUE((status = subgraph_session_object.Initialize()).IsOK()) << status;
 

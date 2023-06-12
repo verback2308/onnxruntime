@@ -114,7 +114,7 @@ namespace Dml
             if (bucket->resources.empty())
             {
                 // No more resources in this bucket - allocate a new one
-                resourceWrapper = m_subAllocator->Alloc(bucketSize);
+                resourceWrapper = m_subAllocator->Alloc(onnxruntime::narrow<size_t>(bucketSize));
                 resourceId = ++m_currentResourceId;
             }
             else
@@ -129,7 +129,7 @@ namespace Dml
         {
             // The allocation will not be pooled.  Construct a new one
             bucketSize = (size + 3) & ~3;
-            resourceWrapper = m_subAllocator->Alloc(bucketSize);
+            resourceWrapper = m_subAllocator->Alloc(onnxruntime::narrow<size_t>(bucketSize));
             resourceId = ++m_currentResourceId;
         }
 
@@ -244,17 +244,12 @@ namespace Dml
 
     void* CPUAllocator::Alloc(size_t size)
     {
-        if (size <= 0)
-        {
-            return nullptr;
-        }
-        void* p = malloc(size);
-        return p;
+        return onnxruntime::AllocatorDefaultAlloc(size);
     }
 
     void CPUAllocator::Free(void* p)
     {
-        free(p);
+        return onnxruntime::AllocatorDefaultFree(p);
     }
 
 } // namespace Dml

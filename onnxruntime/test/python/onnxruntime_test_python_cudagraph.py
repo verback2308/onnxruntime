@@ -1,7 +1,6 @@
 # Copyright (c) Microsoft Corporation. All rights reserved.
 # Licensed under the MIT License.
 
-import pickle
 import unittest
 from typing import Dict, List
 
@@ -62,7 +61,7 @@ class CudaGraphHelper:
 
 
 class TestInferenceSessionWithCudaGraph(unittest.TestCase):
-    def testOrtValueUpdateInPlace(self):
+    def testOrtValueUpdateInPlace(self):  # noqa: N802
         x0 = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]], dtype=np.float32)
         ortvalue_cpu = onnxrt.OrtValue.ortvalue_from_numpy(x0)
         np.testing.assert_allclose(x0, ortvalue_cpu.numpy())
@@ -78,10 +77,10 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
             ortvalue_gpu.update_inplace(x1)
             np.testing.assert_allclose(x1, ortvalue_gpu.numpy())
 
-    def testRunModelWithCudaGraph(self):
+    def testRunModelWithCudaGraph(self):  # noqa: N802
         if "CUDAExecutionProvider" in onnxrt.get_available_providers():
             providers = [("CUDAExecutionProvider", {"enable_cuda_graph": True})]
-            INPUT_SIZE = 1280
+            INPUT_SIZE = 1280  # noqa: N806
             x = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]] * INPUT_SIZE, dtype=np.float32)
             y = np.array([[0.0], [0.0], [0.0]] * INPUT_SIZE, dtype=np.float32)
             x_ortvalue = onnxrt.OrtValue.ortvalue_from_numpy(x, "cuda", 0)
@@ -132,9 +131,8 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
 
             # TODO: set arena intial chunk size to a small value when there is python API for that.
             # In this way, this test could easily detect whether there is memory allocation during cuda graph catpure.
-            # Right now, we can manually change the following line to verify that minimal 2 runs is required for capture:
-            #    https://github.com/microsoft/onnxruntime/blob/main/onnxruntime/core/framework/bfc_arena.h#L59
-
+            # Right now, we can manually change DEFAULT_INITIAL_CHUNK_SIZE_BYTES = 64 in core/framework/bfc_arena.h
+            # to verify that minimal 2 runs is required for capture
             session = onnxrt.InferenceSession(test_model_path, providers=providers)
             inputs = {"data_0": np.random.randint(0, 256, size=[1, 3, 224, 224]).astype(np.float32)}
             expected_output = session.run(None, inputs)[0]
@@ -147,6 +145,7 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
             io_binding = cuda_graph_helper.io_binding
             session.run_with_iobinding(io_binding)
             output = cuda_graph_helper.get_output("softmaxout_1")
+            print(output)
             np.testing.assert_allclose(expected_output, output, rtol=1e-02, atol=1e-02)
 
             # After capturing, CUDA graph replay happens from this Run onwards

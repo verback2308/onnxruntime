@@ -91,7 +91,8 @@ class ModelTestBuilder {
   }
 
   template <typename T>
-  NodeArg* MakeInput(const std::optional<std::vector<int64_t>>& shape) {
+  NodeArg* MakeInput(const std::optional<std::vector<int64_t>>& shape,
+                     std::optional<std::string> input_name = std::nullopt) {
     ONNX_NAMESPACE::TypeProto type_proto;
     type_proto.mutable_tensor_type()->set_elem_type(utils::ToTensorProtoElementType<T>());
     if (shape != std::nullopt) {
@@ -103,7 +104,36 @@ class ModelTestBuilder {
         }
       }
     }
-    std::string name = graph_.GenerateNodeArgName("input");
+
+    if (input_name == std::nullopt) {
+      std::string name = graph_.GenerateNodeArgName("input");
+      return &graph_.GetOrCreateNodeArg(name, &type_proto);
+    } else {
+      ORT_ENFORCE(graph_.GetNodeArg(*input_name) == nullptr, "Input name already exists: ", *input_name);
+      return &graph_.GetOrCreateNodeArg(*input_name, &type_proto);
+    }
+  }
+
+  template <typename T>
+  NodeArg* MakeSymbolicInput(const std::vector<std::variant<int64_t, std::string>>& shape) {
+    ONNX_NAMESPACE::TypeProto type_proto;
+    type_proto.mutable_tensor_type()->set_elem_type(utils::ToTensorProtoElementType<T>());
+    type_proto.mutable_tensor_type()->mutable_shape();
+    for (auto& d : shape) {
+      auto dim = type_proto.mutable_tensor_type()->mutable_shape()->add_dim();
+      std::visit([&dim](auto&& arg) -> void {
+        using V = std::decay_t<decltype(arg)>;
+        if constexpr (std::is_same_v<V, int64_t>) {
+          ORT_ENFORCE(arg >= 0, "Negative dimension is not allowed in symbolic shape");
+          dim->set_dim_value(arg);
+        } else {
+          dim->set_dim_param(arg);
+        }
+      },
+                 d);
+    }
+
+    std::string name = graph_.GenerateNodeArgName("symbolic_input");
     return &graph_.GetOrCreateNodeArg(name, &type_proto);
   }
 
@@ -111,6 +141,24 @@ class ModelTestBuilder {
     std::string name = graph_.GenerateNodeArgName("output");
     output_names_.push_back(name);
     return &graph_.GetOrCreateNodeArg(name, nullptr);
+  }
+
+  template <typename T>
+  NodeArg* MakeOutput(const std::optional<std::vector<int64_t>>& shape) {
+    ONNX_NAMESPACE::TypeProto type_proto;
+    type_proto.mutable_tensor_type()->set_elem_type(utils::ToTensorProtoElementType<T>());
+    if (shape != std::nullopt) {
+      ONNX_NAMESPACE::TensorShapeProto* shape_proto = type_proto.mutable_tensor_type()->mutable_shape();
+      for (auto& d : *shape) {
+        auto dim = shape_proto->add_dim();
+        if (d != -1) {
+          dim->set_dim_value(d);
+        }
+      }
+    }
+    std::string name = graph_.GenerateNodeArgName("output");
+    output_names_.push_back(name);
+    return &graph_.GetOrCreateNodeArg(name, &type_proto);
   }
 
   NodeArg* MakeIntermediate() {
@@ -184,6 +232,11 @@ class ModelTestBuilder {
   template <typename T>
   NodeArg* Make1DInitializer(const std::vector<T>& data) {
     return MakeInitializer({static_cast<int64_t>(data.size())}, data);
+  }
+
+  NodeArg* MakeEmptyInput() {
+    NodeArg* empty = &graph_.GetOrCreateNodeArg("", nullptr);
+    return empty;
   }
 
   Node& AddNode(const std::string& op_type,

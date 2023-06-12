@@ -3,12 +3,14 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 
-from onnxruntime.capi._pybind_state import Severity
+import io
+import logging
+import sys
 from contextlib import contextmanager
 from enum import IntEnum
-import io
-import sys
-import warnings
+from typing import Dict, List
+
+from onnxruntime.capi._pybind_state import Severity
 
 
 class LogLevel(IntEnum):
@@ -21,9 +23,9 @@ class LogLevel(IntEnum):
 
 @contextmanager
 def suppress_os_stream_output(suppress_stdout=True, suppress_stderr=True, log_level=LogLevel.WARNING):
-    """Supress output from being printed to stdout and stderr if log_level is WARNING or higher.
+    """Suppress output from being printed to stdout and stderr if log_level is WARNING or higher.
 
-    If there is any output detected, a single warning is issued at of the context
+    If there is any output detected, a single warning is issued in the context
     """
 
     # stdout and stderr is written to a tempfile instead
@@ -39,28 +41,38 @@ def suppress_os_stream_output(suppress_stdout=True, suppress_stderr=True, log_le
             sys.stdout = fo
         if suppress_stderr and suppress_logs:
             sys.stderr = fo
-        yield
+        yield fo
     finally:
         if suppress_stdout:
             sys.stdout = stdout
         if suppress_stderr:
             sys.stderr = stderr
 
-        if fo.tell() > 0 and suppress_logs:
-            # If anything was captured in fo, raise a single user warning letting users know that there was
-            # some warning or error that was raised
-            warnings.warn(
-                "There were one or more warnings or errors raised while exporting the PyTorch "
-                "model. Please enable INFO level logging to view all warnings and errors.",
-                UserWarning,
-            )
+
+ORTMODULE_LOG_LEVEL_MAP: Dict[LogLevel, List[int]] = {
+    LogLevel.VERBOSE: [Severity.VERBOSE, logging.DEBUG],
+    LogLevel.INFO: [Severity.INFO, logging.INFO],
+    LogLevel.WARNING: [Severity.WARNING, logging.WARNING],
+    LogLevel.ERROR: [Severity.ERROR, logging.ERROR],
+    LogLevel.FATAL: [Severity.FATAL, logging.FATAL],
+}
 
 
-def ortmodule_loglevel_to_onnxruntime_c_loglevel(loglevel):
-    return {
-        LogLevel.VERBOSE: Severity.VERBOSE,
-        LogLevel.INFO: Severity.INFO,
-        LogLevel.WARNING: Severity.WARNING,
-        LogLevel.ERROR: Severity.ERROR,
-        LogLevel.FATAL: Severity.FATAL,
-    }.get(loglevel, Severity.WARNING)
+def ortmodule_loglevel_to_onnxruntime_c_loglevel(loglevel: LogLevel) -> int:
+    return ORTMODULE_LOG_LEVEL_MAP.get(loglevel, [Severity.WARNING, logging.WARNING])[0]
+
+
+def ortmodule_loglevel_to_python_loglevel(loglevel: LogLevel) -> int:
+    return ORTMODULE_LOG_LEVEL_MAP.get(loglevel, [Severity.WARNING, logging.WARNING])[1]
+
+
+class LogColor:
+    HEADER = "\033[95m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    WARNING = "\033[93m"
+    RED = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"

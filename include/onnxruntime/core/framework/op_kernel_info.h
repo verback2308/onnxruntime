@@ -31,7 +31,7 @@ class OpKernelInfo : public OpNodeProtoHelper<ProtoHelperNodeContext> {
 
   OpKernelInfo(const OpKernelInfo& other);
 
-  const OrtMemoryInfo& GetMemoryInfo(OrtMemType mem_type) const;
+  const OrtDevice GetDevice(OrtMemType mem_type) const;
 
   AllocatorPtr GetAllocator(OrtMemType mem_type) const;
 
@@ -44,6 +44,8 @@ class OpKernelInfo : public OpNodeProtoHelper<ProtoHelperNodeContext> {
   const onnxruntime::Node& node() const noexcept;
 
   bool TryGetConstantInput(int input_index, const Tensor** constant_input_value) const;
+
+  bool TryGetConstantInput(int input_index, const OrtValue** constant_input_value) const;
 
  private:
   ORT_DISALLOW_MOVE(OpKernelInfo);

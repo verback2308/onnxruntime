@@ -10,7 +10,8 @@
 # For example, the float32 ONNX pipeline is saved to ./sd-v1-5 directory, you can optimize and convert it to float16 like the following:
 #    python optimize_pipeline.py -i ./sd-v1-5 -o ./sd-v1-5-fp16 --float16
 #
-# Note that the optimized models are for CUDA Execution Provider. It might not run in other execution provider.
+# Note that the optimizations are carried out for CUDA Execution Provider at first, other EPs may not have the support for the fused opeartors.
+# In this case, the users should disable the operator fusion manually to workaround.
 #
 # Stable diffusion 2.1 model will get black images using float16 Attention. A walkaround is to force Attention to run in float32 like the following:
 #    python optimize_pipeline.py -i ./sd-v2-1 -o ./sd-v2-1-fp16 --float16 --force_fp32_ops unet:Attention
@@ -34,11 +35,11 @@ from packaging import version
 import onnxruntime
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", ".."))
-from fusion_options import FusionOptions
-from onnx_model_clip import ClipOnnxModel
-from onnx_model_unet import UnetOnnxModel
-from onnx_model_vae import VaeOnnxModel
-from optimizer import optimize_by_onnxruntime, optimize_model
+from fusion_options import FusionOptions  # noqa: E402
+from onnx_model_clip import ClipOnnxModel  # noqa: E402
+from onnx_model_unet import UnetOnnxModel  # noqa: E402
+from onnx_model_vae import VaeOnnxModel  # noqa: E402
+from optimizer import optimize_by_onnxruntime, optimize_model  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def optimize_sd_pipeline(
     float16: bool,
     force_fp32_ops: List[str],
     enable_runtime_optimization: bool,
+    args,
 ):
     """Optimize onnx models used in stable diffusion onnx pipeline and optionally convert to float16.
 
@@ -123,14 +125,15 @@ def optimize_sd_pipeline(
         # Right now, onnxruntime does not save >2GB model so we use script to optimize unet instead.
         logger.info(f"Optimize {onnx_model_path}...")
 
-        fusion_options = FusionOptions(model_type)
+        args.model_type = model_type
+        fusion_options = FusionOptions.parse(args)
 
         if model_type in ["unet"]:
             # Some optimizations are not available in v1.14 or older version: packed QKV and BiasAdd
             has_all_optimizations = version.parse(onnxruntime.__version__) >= version.parse("1.15.0")
-            fusion_options.enable_packed_kv = float16
-            fusion_options.enable_packed_qkv = float16 and has_all_optimizations
-            fusion_options.enable_bias_add = has_all_optimizations
+            fusion_options.enable_packed_kv = float16 and fusion_options.enable_packed_kv
+            fusion_options.enable_packed_qkv = float16 and has_all_optimizations and fusion_options.enable_packed_qkv
+            fusion_options.enable_bias_add = has_all_optimizations and fusion_options.enable_bias_add
 
         m = optimize_model(
             str(onnx_model_path),
@@ -286,6 +289,8 @@ def parse_arguments():
     )
     parser.set_defaults(use_external_data_format=False)
 
+    FusionOptions.add_arguments(parser)
+
     args = parser.parse_args()
     return args
 
@@ -303,7 +308,9 @@ def main():
         args.float16,
         args.force_fp32_ops,
         args.inspect,
+        args,
     )
 
 
-main()
+if __name__ == "__main__":
+    main()

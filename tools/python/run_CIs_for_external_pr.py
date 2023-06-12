@@ -27,7 +27,7 @@ def parse_args():
 
 def run_gh_pr_command(command: typing.List[str]):
     try:
-        return subprocess.run(["gh", "pr"] + command, capture_output=True, text=True, check=True)
+        return subprocess.run(["gh", "pr", *command], capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as cpe:
         print(cpe)
         print(cpe.stderr)
@@ -56,6 +56,7 @@ def main():
     # Current pipelines. These change semi-frequently and may need updating.
     pipelines = [
         # windows
+        "Windows ARM64 QNN CI Pipeline",
         "Windows CPU CI Pipeline",
         "Windows GPU CI Pipeline",
         "Windows GPU TensorRT CI Pipeline",
@@ -66,6 +67,7 @@ def main():
         "Linux GPU CI Pipeline",
         "Linux GPU TensorRT CI Pipeline",
         "Linux OpenVINO CI Pipeline",
+        "Linux QNN CI Pipeline",
         # mac
         "MacOS CI Pipeline",
         # training

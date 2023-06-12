@@ -204,7 +204,8 @@ struct KernelArgs
 
 std::vector<DimensionType> InitializeKernelOutputDimensions(
     gsl::span<const DimensionType> inputDimensions,
-    const KernelArgs& args);
+    const KernelArgs& args,
+    bool isNhwc = false);
 
 std::vector<DimensionType> InitializeKernelOutputDimsTranspose(
     gsl::span<const DimensionType> inputDimensions,
@@ -219,7 +220,8 @@ KernelArgs InitializeKernel(
 
 void ResolveAutoPadding(
     KernelArgs& args,
-    gsl::span<const DimensionType> inputDimensions);
+    gsl::span<const DimensionType> inputDimensions,
+    bool isNhwc = false);
 
 void MatMulShapeMapping(
     std::vector<DimensionType>& inputShape0,
@@ -309,6 +311,7 @@ struct IShapeInformationAdapter
     virtual uint32_t GetInputTensorDimensionCount(uint32_t inputIndex) const = 0;
     virtual std::vector<uint32_t> GetInputTensorShape(uint32_t inputIndex) const = 0;
     virtual uint32_t GetSequenceInputCount(uint32_t inputIndex) const = 0;
+    virtual MLOperatorTensorDataType GetSequenceInputDataType(uint32_t inputIndex) const = 0;
     virtual uint32_t GetSequenceInputTensorDimensionCount(uint32_t inputIndex, uint32_t sequenceIndex) const = 0;
     virtual std::vector<uint32_t> GetSequenceInputTensorShape(uint32_t inputIndex, uint32_t sequenceIndex) const = 0;
     virtual ~IShapeInformationAdapter() {}
@@ -348,6 +351,7 @@ struct ShapeInformationAdapter : IShapeInformationAdapter
     virtual uint32_t GetInputTensorDimensionCount(uint32_t inputIndex) const { return m_informationSource.GetInputTensorDimensionCount(inputIndex); }
     virtual std::vector<uint32_t> GetInputTensorShape(uint32_t inputIndex) const { return m_informationSource.GetInputTensorShape(inputIndex); }
     virtual uint32_t GetSequenceInputCount(uint32_t inputIndex) const { return m_informationSource.GetSequenceInputCount(inputIndex); }
+    virtual MLOperatorTensorDataType GetSequenceInputDataType(uint32_t inputIndex) const { return m_informationSource.GetSequenceInputDataType(inputIndex); }
     virtual uint32_t GetSequenceInputTensorDimensionCount(uint32_t inputIndex, uint32_t sequenceIndex) const { return m_informationSource.GetSequenceInputTensorDimensionCount(inputIndex, sequenceIndex); }
     virtual std::vector<uint32_t> GetSequenceInputTensorShape(uint32_t inputIndex, uint32_t sequenceIndex) const { return m_informationSource.GetSequenceInputTensorShape(inputIndex, sequenceIndex); }
     virtual ~ShapeInformationAdapter() {}
@@ -448,13 +452,15 @@ class ConvolutionHelperBase
 public:
     enum FilterDims { K };
     enum InputDims { N, C, H, W };
+    enum class NhwcInputDims { N, H, W, C };
 
 public:
     // Info_t is used to obtain attributes which will be used for calculating the output shape later.
     template<typename Info_t, typename Shape_t>
-    ConvolutionHelperBase(const Info_t& info, const Shape_t& shape, bool transpose, bool hasDynamicPads, uint32_t inputTensorIndex, uint32_t filterTensorIndex) :
+    ConvolutionHelperBase(const Info_t& info, const Shape_t& shape, bool transpose, bool hasDynamicPads, bool isNhwc, uint32_t inputTensorIndex, uint32_t filterTensorIndex) :
         m_inputTensorIndex(inputTensorIndex),
         m_filterTensorIndex(filterTensorIndex),
+        m_isNhwc(isNhwc),
         m_kernel(InitializeKernel(info, shape.GetInputTensorDimensionCount(inputTensorIndex), shape.GetInputTensorShape(filterTensorIndex)))
     {
         m_groupCount = info.template GetOptionalAttribute<uint32_t>(AttrName::Group, 1);
@@ -485,6 +491,7 @@ protected:
     uint32_t m_groupCount;
     uint32_t m_inputTensorIndex;
     uint32_t m_filterTensorIndex;
+    bool m_isNhwc;
     KernelArgs m_kernel;
     std::vector<EdgeShapes> m_outputShapes;
 };
@@ -493,28 +500,35 @@ class ConvHelper : public ConvolutionHelperBase
 {
 public:
     template<typename Info_t, typename Shape_t>
-    ConvHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, false, false, 0, 1) {}
+    ConvHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, false, false, false, 0, 1) {}
+};
+
+class NhwcConvHelper : public ConvolutionHelperBase
+{
+public:
+    template<typename Info_t, typename Shape_t>
+    NhwcConvHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, false, false, true, 0, 1) {}
 };
 
 class ConvTransposeHelper : public ConvolutionHelperBase
 {
 public:
     template<typename Info_t, typename Shape_t>
-    ConvTransposeHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, true, false, 0, 1) {}
+    ConvTransposeHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, true, false, false, 0, 1) {}
 };
 
 class ConvTransposeWithDynamicPadsHelper : public ConvolutionHelperBase
 {
 public:
     template<typename Info_t, typename Shape_t>
-    ConvTransposeWithDynamicPadsHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, true, true, 0, 1) {}
+    ConvTransposeWithDynamicPadsHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, true, true, false, 0, 1) {}
 };
 
 class QLinearConvHelper : public ConvolutionHelperBase
 {
 public:
     template<typename Info_t, typename Shape_t>
-    QLinearConvHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, false, false, 0, 3) {}
+    QLinearConvHelper(const Info_t& info, const Shape_t& shape) : ConvolutionHelperBase(info, shape, false, false, false, 0, 3) {}
 };
 
 class GemmHelper
@@ -673,13 +687,6 @@ public:
 
     std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
 
-private:
-    static void HandleEmptyAxes(
-        /*inout*/std::vector<int32_t>& onnxAxes,
-        gsl::span<const uint32_t> inputShape,
-        bool treatEmptyAsNop
-    );
-
 protected:
     std::vector<int32_t> m_axes;
     int m_keepDims = 0; // Keep the dimensions rather than removing size 1 dimensions.
@@ -732,6 +739,7 @@ public:
         None,
         Identity,
         Multiply,
+        OuterProduct,
         MatMul,
         MatMulTransposeA,
         MatMulTransposeB,
@@ -1405,7 +1413,55 @@ public:
     std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
 };
 
+class MultiHeadAttentionHelper
+{
+public:
+    template <typename Info_t, typename Shape_t>
+    MultiHeadAttentionHelper(const Info_t& info, const Shape_t& shapeInfo)
+    {
+        Initialize(KernelInformationAdapter(info));
+    }
+
+    std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
+
+private:
+    void Initialize(const IKernelInformationAdapter& kernelInformation);
+    uint32_t m_numHeads;
+};
+
+class AttentionHelper
+{
+public:
+    template <typename Info_t, typename Shape_t>
+    AttentionHelper(const Info_t& info, const Shape_t& shapeInfo)
+    {
+        Initialize(KernelInformationAdapter(info));
+    }
+
+    std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
+
+private:
+    void Initialize(const IKernelInformationAdapter& kernelInformation);
+    std::vector<int32_t> m_qkvHiddenSizes;
+};
+
+class SkipLayerNormHelper
+{
+public:
+    template <typename Info_t, typename Shape_t>
+    SkipLayerNormHelper(const Info_t& info, const Shape_t& shapeInfo) {}
+    std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
+};
+
+class BiasSplitGeluHelper {
+public:
+    template <typename Info_t, typename Shape_t>
+    BiasSplitGeluHelper(const Info_t& info, const Shape_t& shapeInfo) { }
+    std::vector<EdgeShapes> GetOutputShapes(const MLShapeInferenceContext& shapeInfo) const;
+};
+
 using ShapeInferenceHelper_Conv = ConvHelper;
+using ShapeInferenceHelper_NhwcConv = NhwcConvHelper;
 using ShapeInferenceHelper_ConvTranspose = ConvTransposeHelper;
 using ShapeInferenceHelper_ConvTransposeWithDynamicPads = ConvTransposeWithDynamicPadsHelper;
 using ShapeInferenceHelper_ConvInteger = ConvHelper;
@@ -1419,20 +1475,23 @@ using ShapeInferenceHelper_LpPool = PoolingHelper;
 using ShapeInferenceHelper_GlobalLpPool = GlobalPoolingHelper;
 using ShapeInferenceHelper_MaxRoiPool = RoiPoolingHelper;
 using ShapeInferenceHelper_RoiAlign10 = VersionedOpsetHelper<RoiAlignHelper, 10>;
+using ShapeInferenceHelper_RoiAlign16 = VersionedOpsetHelper<RoiAlignHelper, 16>;
 using ShapeInferenceHelper_InstanceNormalization = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_BatchNormalization = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_BatchNormalization15 = BatchNormalizationHelper;
 
 using ShapeInferenceHelper_LRN = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_MeanVarianceNormalization = GetOutputShapeAsInputShapeHelper;
+using ShapeInferenceHelper_GroupNorm = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_LayerNormalization = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_LayerNormalization17 = GetOutputShapeAsInputShapeHelper;
-using ShapeInferenceHelper_SkipLayerNormalization = GetOutputShapeAsInputShapeHelper;
+using ShapeInferenceHelper_SkipLayerNormalization = SkipLayerNormHelper;
 using ShapeInferenceHelper_EmbedLayerNormalization = EmbedLayerNormalizationHelper;
 using ShapeInferenceHelper_LpNormalization = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_RNN = RecurrentHelper;
 using ShapeInferenceHelper_GRU = RecurrentHelper;
 using ShapeInferenceHelper_LSTM = RecurrentHelper;
+using ShapeInferenceHelper_BiasAdd = GetOutputShapeAsInputShapeHelper;
 
 using ShapeInferenceHelper_Gather = GatherHelper;
 using ShapeInferenceHelper_GatherElements = GetOutputShapeAsSpecificInputShapeHelper<1>;
@@ -1450,6 +1509,7 @@ using ShapeInferenceHelper_Flatten13 = FlattenHelper;
 using ShapeInferenceHelper_Split7 = VersionedOpsetHelper<SplitHelper, 7>;
 using ShapeInferenceHelper_Split11 = VersionedOpsetHelper<SplitHelper, 11>;
 using ShapeInferenceHelper_Split13 = VersionedOpsetHelper<SplitHelper, 13>;
+using ShapeInferenceHelper_Split18 = VersionedOpsetHelper<SplitHelper, 18>;
 using ShapeInferenceHelper_Transpose = TransposeHelper;
 using ShapeInferenceHelper_Concat = ConcatHelper;
 using ShapeInferenceHelper_Slice7 = VersionedOpsetHelper<SliceHelper, 7>;
@@ -1459,6 +1519,7 @@ using ShapeInferenceHelper_Slice13 = VersionedOpsetHelper<SliceHelper, 13>; // N
 using ShapeInferenceHelper_Pad7 = VersionedOpsetHelper<PaddingHelper, 7>;
 using ShapeInferenceHelper_Pad11 = VersionedOpsetHelper<PaddingHelper, 11>;
 using ShapeInferenceHelper_Pad13 = VersionedOpsetHelper<PaddingHelper, 13>;
+using ShapeInferenceHelper_Pad18 = VersionedOpsetHelper<PaddingHelper, 18>;
 
 using ShapeInferenceHelper_SpaceToDepth = SpaceToDepthHelper;
 using ShapeInferenceHelper_DepthToSpace = DepthToSpaceHelper;
@@ -1521,7 +1582,8 @@ using ShapeInferenceHelper_Affine = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_QuantizeLinear = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_DequantizeLinear = GetOutputShapeAsInputShapeHelper;
 using ShapeInferenceHelper_QLinearSigmoid = GetOutputShapeAsInputShapeHelper;
-using ShapeInferenceHelper_Attention = GetOutputShapeAsInputShapeHelper;
+using ShapeInferenceHelper_Attention = AttentionHelper;
+using ShapeInferenceHelper_MultiHeadAttention = MultiHeadAttentionHelper;
 using ShapeInferenceHelper_Sign = GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_IsNaN = GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_Erf = GetBroadcastedOutputShapeHelper;
@@ -1535,6 +1597,11 @@ using ShapeInferenceHelper_IsInf = GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_Mod = GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_BitShift= GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_Round = GetBroadcastedOutputShapeHelper;
+using ShapeInferenceHelper_QuickGelu = GetOutputShapeAsInputShapeHelper;
+using ShapeInferenceHelper_BitwiseAnd = GetBroadcastedOutputShapeHelper;
+using ShapeInferenceHelper_BitwiseOr = GetBroadcastedOutputShapeHelper;
+using ShapeInferenceHelper_BitwiseXor = GetBroadcastedOutputShapeHelper;
+using ShapeInferenceHelper_BitwiseNot = GetBroadcastedOutputShapeHelper;
 
 using ShapeInferenceHelper_ReduceSum = ReduceHelper;
 using ShapeInferenceHelper_ReduceMean = ReduceHelper;
@@ -1621,10 +1688,12 @@ using ShapeInferenceHelper_DmlFusedMeanVarianceNormalization = GetOutputShapeAsI
 using ShapeInferenceHelper_DmlFusedGemm = GemmHelper;
 using ShapeInferenceHelper_DmlFusedMatMul = MatMulHelper;
 using ShapeInferenceHelper_FusedMatMul = FusedMatMulHelper;
+using ShapeInferenceHelper_FusedMatMulActivation = FusedMatMulHelper;
 using ShapeInferenceHelper_DmlFusedAdd = GetBroadcastedOutputShapeHelper;
 using ShapeInferenceHelper_DmlFusedSum = GetBroadcastedOutputShapeHelper;
 
 using ShapeInferenceHelper_Shape = ShapeHelper;
 using ShapeInferenceHelper_Size = SizeHelper;
+using ShapeInferenceHelper_BiasSplitGelu = BiasSplitGeluHelper;
 
 }  // namespace OperatorHelper

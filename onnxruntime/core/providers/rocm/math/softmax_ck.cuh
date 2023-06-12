@@ -8,6 +8,8 @@
 #include <vector>
 
 #ifdef USE_COMPOSABLE_KERNEL
+#include "core/providers/rocm/composable_kernel_common.h"
+
 #include "ck/ck.hpp"
 #include "ck/library/tensor_operation_instance/gpu/softmax.hpp"
 #include "ck/tensor_operation/gpu/device/device_softmax.hpp"
@@ -22,30 +24,15 @@ namespace rocm {
 
 #ifdef USE_COMPOSABLE_KERNEL
 
-template <typename T>
-struct DataTypeAdaptor {
-  using type = T;
-};
-
-template <>
-struct DataTypeAdaptor<half> {
-  using type = ck::half_t;
-};
-
-template <>
-struct DataTypeAdaptor<BFloat16> {
-  using type = ck::bhalf16_t;
-};
-
 using Nop = ck::tensor_operation::element_wise::PassThrough;
 constexpr int Rank = 4;
 constexpr int NumReduceDim = 1;
 
 template <typename InputT, typename OutputT, typename AccT>
 auto GetCKSoftmaxTypeStringAndOps() {
-  using InDataType = typename DataTypeAdaptor<InputT>::type;
-  using OutDataType = typename DataTypeAdaptor<OutputT>::type;
-  using AccDataType = typename DataTypeAdaptor<AccT>::type;
+  using InDataType = typename CKDataTypeAdaptor<InputT>::type;
+  using OutDataType = typename CKDataTypeAdaptor<OutputT>::type;
+  using AccDataType = typename CKDataTypeAdaptor<AccT>::type;
   using DeviceSoftmax = ck::tensor_operation::device::
       DeviceSoftmax<InDataType, AccDataType, OutDataType, Nop, Nop, Rank>;
   using InstanceFactory = ck::tensor_operation::device::instance::DeviceOperationInstanceFactory<DeviceSoftmax>;
@@ -56,8 +43,8 @@ auto GetCKSoftmaxTypeStringAndOps() {
     auto invoker = impl->MakeInvokerPointer();
 
     auto ck_softmax_op = [impl = std::move(impl), invoker = std::move(invoker)](const SoftmaxParams<InputT, OutputT>* params) -> Status {
-      AccDataType alpha{1.0f};
-      AccDataType beta{0.0f};
+      double alpha{1.0f};
+      double beta{0.0f};
 
       TUNABLE_OP_RETURN_UNSUPPORTED_ARGUMENT_IF(
           params->is_log_softmax,
@@ -71,7 +58,7 @@ auto GetCKSoftmaxTypeStringAndOps() {
       std::vector<ck::index_t> reduce_dims{3};
 
       auto nop = Nop{};
-      auto arg = impl->MakeArgumentPointer(in_lengths, in_strides, reduce_dims, &alpha, &beta,
+      auto arg = impl->MakeArgumentPointer(in_lengths, in_strides, reduce_dims, alpha, beta,
                                            params->input, params->output, nop, nop);
       TUNABLE_OP_RETURN_UNSUPPORTED_ARGUMENT_IF(!impl->IsSupportedArgument(arg.get()),
                                                 impl->GetTypeString(), " does not support ", params->Signature());

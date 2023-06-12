@@ -3,16 +3,18 @@
 # Licensed under the MIT License.
 # --------------------------------------------------------------------------
 
-import warnings
+from typing import Callable
 
 import torch
 import torch.onnx.symbolic_helper as sym_help
+from packaging import version
 from packaging.version import Version
 from torch.onnx import register_custom_op_symbolic
 from torch.onnx.symbolic_helper import _get_tensor_dim_size, _get_tensor_sizes, parse_args
 
 from onnxruntime.training import ortmodule
 
+from ._utils import get_runtime_pytorch_version
 
 # Mapping from pytorch scalar type to onnx scalar type.
 _CAST_PYTORCH_TO_ONNX = {
@@ -28,6 +30,11 @@ _CAST_PYTORCH_TO_ONNX = {
     "ComplexFloat": torch.onnx.TensorProtoDataType.COMPLEX64,
     "ComplexDouble": torch.onnx.TensorProtoDataType.COMPLEX128,
     "BFloat16": torch.onnx.TensorProtoDataType.BFLOAT16,
+    # Not yet defined in torch.
+    # "Float8E4M3FN": torch.onnx.TensorProtoDataType.FLOAT8E4M3FN,
+    # "Float8E4M3FNUZ": torch.onnx.TensorProtoDataType.FLOAT8E4M3FNUZ,
+    # "Float8E5M2": torch.onnx.TensorProtoDataType.FLOAT8E5M2,
+    # "Float8E5M2FNUZ": torch.onnx.TensorProtoDataType.FLOAT8E5M2FNUZ,
     "Undefined": torch.onnx.TensorProtoDataType.UNDEFINED,
 }
 
@@ -39,12 +46,34 @@ def pytorch_type_to_onnx(scalar_type: str) -> torch.onnx.TensorProtoDataType:
         return _CAST_PYTORCH_TO_ONNX[scalar_type]
 
 
-def wrap_custom_export_function(original_func):
-    # Starting from PyTorch 1.11, there has been a change to symbolic function signature
-    # in terms of how additional context is accessed. More info at
-    # https://github.com/pytorch/pytorch/blob/6b02648479d3615fa3260961e24f38dd0f22da94/torch/onnx/symbolic_helper.py#L48
-    # This code can be cleaned up once support for PyTorch version < 1.11 is dropped.
-    try:
+def wrap_custom_export_function(original_func: Callable) -> Callable:
+    """This function is to wrap the custom export function to make sure it can be used by different versions of PyTorch.
+
+    Args:
+        original_func: The original custom export function.
+
+    Note1:
+        [PyTorch exporter breaking change] Starting from PyTorch 1.11, there has been a change to symbolic function
+        signature in terms of how additional context is accessed. More info at
+        https://github.com/pytorch/pytorch/blob/6b02648479d3615fa3260961e24f38dd0f22da94/torch/onnx/symbolic_helper.py#L48
+        This code can be cleaned up once support for PyTorch version < 1.11 is dropped.
+    Note2:
+        [PyTorch exporter breaking change] Custom export function's first argument is SymbolicContext since 1.11, but
+        is changed later, and will be deprecated in 1.13 as claimed. So we need to use GraphContext as the first
+        argument instead.
+
+    """
+    runtime_pytorch_version = get_runtime_pytorch_version()
+
+    if runtime_pytorch_version >= version.parse("1.13"):
+        from torch.onnx._internal import jit_utils
+
+        def _export_with_ctx(graph_context: jit_utils.GraphContext, *args, **kwargs):
+            return original_func(graph_context, graph_context.original_node, *args, **kwargs)
+
+        return _export_with_ctx
+
+    elif runtime_pytorch_version >= version.parse("1.11"):
         from torch.onnx import SymbolicContext
 
         def _export_with_ctx(ctx: SymbolicContext, graph, *args, **kwargs):
@@ -52,7 +81,7 @@ def wrap_custom_export_function(original_func):
             return original_func(graph, node, *args, **kwargs)
 
         return _export_with_ctx
-    except ImportError:
+    else:
 
         def _export_with_no_ctx(graph, *args, **kwargs):
             return original_func(graph, None, *args, **kwargs)
@@ -174,7 +203,7 @@ def embedding(g, weight, indices, padding_idx, scale_grad_by_freq, sparse):
     )
     indices_shape = _get_tensor_sizes(indices)
     if indices_shape is not None and hasattr(weight.type(), "with_sizes"):
-        output_type = weight.type().with_sizes(indices_shape + [_get_tensor_dim_size(weight, 1)])
+        output_type = weight.type().with_sizes([*indices_shape, _get_tensor_dim_size(weight, 1)])
         output.setType(output_type)
     return output
 
@@ -272,7 +301,7 @@ def adaptive_avg_pool2d(g, self, output_size):
 
 
 @register_symbolic("numpy_T")
-def numpy_T(g, self):
+def numpy_T(g, self):  # noqa: N802
     # Numpy-style `a.T`: returns the tensor
     # with dims reversed
     rank = sym_help._get_tensor_rank(self)
@@ -302,7 +331,7 @@ def squeeze(g, self, dim=None):
 # exporting to Split with SplitGrad as gradient graph.
 # Exporter will fail to register symbolic with non-empty domain when torch version is < 1.11.0.
 @register_symbolic("ConstantChunk", "prim", torch_version_start="1.11.0")
-def prim_ConstantChunk(g, self, chunks, dim):
+def prim_ConstantChunk(g, self, chunks, dim):  # noqa: N802
     if chunks == 1:
         return self
     input_shape_dim = g.op(
@@ -551,7 +580,7 @@ def einsum_internal(g, equation, tensor_list):
     # After process contraction labels, contraction_labels = [k],
     # label_perm_map = {(s, 0), (m, 1), (k, 2)}, out_size = 2, perm_size = 3.
     out_size = len(result_labels)
-    label_perm_map = dict([(label, idx) for idx, label in enumerate(result_labels)])
+    label_perm_map = {label: idx for idx, label in enumerate(result_labels)}
     perm_size = out_size
     contraction_labels = []
     lhs_reduce_sum_axes = []
@@ -760,9 +789,9 @@ def group_norm(g, input, num_groups, weight, bias, eps, cudnn_enabled):
 
     shape = g.op("Shape", input)
     size = g.op("Size", input)
-    N = g.op("Gather", shape, g.op("Constant", value_t=torch.tensor(0, dtype=torch.long)), axis_i=0)
-    C = g.op("Gather", shape, g.op("Constant", value_t=torch.tensor(1, dtype=torch.long)), axis_i=0)
-    HxW = g.op("Div", size, g.op("Mul", N, C))
+    N = g.op("Gather", shape, g.op("Constant", value_t=torch.tensor(0, dtype=torch.long)), axis_i=0)  # noqa: N806
+    C = g.op("Gather", shape, g.op("Constant", value_t=torch.tensor(1, dtype=torch.long)), axis_i=0)  # noqa: N806
+    HxW = g.op("Div", size, g.op("Mul", N, C))  # noqa: N806
     return g.op(
         "org.pytorch.aten::ATen",
         input,

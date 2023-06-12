@@ -81,7 +81,7 @@ struct GreedySearchState : public IGreedySearchState<T> {
             int max_length,
             int num_heads,
             int head_size,
-            bool allocate_staging_buffer_for_past_state_reorder,
+            bool has_decoder_masked_self_attention,
             bool is_cuda) {
     // below buffers are on cpu
     this->sequences_space = AllocateBuffer<int32_t>(cpu_allocator,
@@ -111,8 +111,9 @@ struct GreedySearchState : public IGreedySearchState<T> {
           this->topk_scores_buffer,
           this->topk_tokens_buffer);
 
-      // If at all we need to, we only need to re-order past state for CUDA
-      if (allocate_staging_buffer_for_past_state_reorder) {
+      // If at all we need to, we only need to re-order past state for CUDA as
+      //`DecoderMaskedSelfAttention` is only supported on CUDA
+      if (has_decoder_masked_self_attention) {
         TensorShape staging_for_past_state_reorder_buffer_shape = {batch_size, num_heads, max_length, head_size};
 
         Tensor temp(DataTypeImpl::GetType<T>(), staging_for_past_state_reorder_buffer_shape, allocator);
@@ -204,14 +205,16 @@ class GreedySearchBase : public GenerateBase {
 template <typename T, typename ParametersT>
 Status GreedySearchBase<T, ParametersT>::CheckInputs(const OpKernelContextInternal& context) {
   // Input shapes:
-  //   input_ids  : (batch_size, sequence_length)
-  //   vocab_mask : (vocab_size) or nullptr
+  //   input_ids          : (batch_size, sequence_length)
+  //   vocab_mask         : (vocab_size) or nullptr
+  //   decoder_input_ids  : (batch_size, initial_decode_sequence_length)
   ORT_RETURN_IF_ERROR(this->CheckInputsImpl(parameters_,
-                                            context.Input<Tensor>(0),    // input_ids
-                                            context.Input<Tensor>(4),    // vocab_mask
-                                            context.Input<Tensor>(5),    // prefix_vocab_mask
-                                            context.Input<Tensor>(6),    // attention_mask
-                                            context.Input<Tensor>(7)));  // presence_mask
+                                            context.Input<Tensor>(0),     // input_ids
+                                            context.Input<Tensor>(4),     // vocab_mask
+                                            context.Input<Tensor>(5),     // prefix_vocab_mask
+                                            context.Input<Tensor>(6),     // attention_mask
+                                            context.Input<Tensor>(7),     // presence_mask
+                                            context.Input<Tensor>(10)));  // decoder_input_ids
 
   return Status::OK();
 }

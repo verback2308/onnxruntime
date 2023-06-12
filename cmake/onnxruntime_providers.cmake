@@ -114,6 +114,9 @@ endif()
 if(onnxruntime_USE_NNAPI_BUILTIN)
   set(PROVIDERS_NNAPI onnxruntime_providers_nnapi)
 endif()
+if(onnxruntime_USE_JSEP)
+  set(PROVIDERS_JS onnxruntime_providers_js)
+endif()
 if(onnxruntime_USE_QNN)
   set(PROVIDERS_QNN onnxruntime_providers_qnn)
 endif()
@@ -143,6 +146,9 @@ if (onnxruntime_USE_TVM)
 endif()
 if (onnxruntime_USE_XNNPACK)
   set(PROVIDERS_XNNPACK onnxruntime_providers_xnnpack)
+endif()
+if(onnxruntime_USE_WEBNN)
+  set(PROVIDERS_WEBNN onnxruntime_providers_webnn)
 endif()
 if(onnxruntime_USE_SNPE)
     include(onnxruntime_snpe_provider.cmake)
@@ -312,8 +318,8 @@ set_target_properties(onnxruntime_providers PROPERTIES FOLDER "ONNXRuntime")
 
 if (NOT onnxruntime_MINIMAL_BUILD AND NOT onnxruntime_EXTENDED_MINIMAL_BUILD
                                   AND NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin|iOS"
-                                  AND NOT (CMAKE_SYSTEM_NAME STREQUAL "Android")
-                                  AND NOT onnxruntime_BUILD_WEBASSEMBLY)
+                                  AND NOT CMAKE_SYSTEM_NAME STREQUAL "Android"
+                                  AND NOT CMAKE_SYSTEM_NAME STREQUAL "Emscripten")
   file(GLOB onnxruntime_providers_shared_cc_srcs CONFIGURE_DEPENDS
   "${ONNXRUNTIME_ROOT}/core/providers/shared/*.h"
   "${ONNXRUNTIME_ROOT}/core/providers/shared/*.cc"
@@ -491,6 +497,19 @@ if (onnxruntime_USE_CUDA)
   target_link_libraries(onnxruntime_providers_cuda PRIVATE cublasLt cublas cudnn curand cufft ${ABSEIL_LIBS} ${ONNXRUNTIME_PROVIDERS_SHARED} Boost::mp11 safeint_interface)
   if(onnxruntime_CUDNN_HOME)
     target_include_directories(onnxruntime_providers_cuda PRIVATE ${onnxruntime_CUDNN_HOME}/include)
+    target_link_directories(onnxruntime_providers_cuda PRIVATE ${onnxruntime_CUDNN_HOME}/lib)
+  endif()
+
+  if (onnxruntime_USE_TRITON_KERNEL)
+    # compile triton kernel, generate .a and .h files
+    include(onnxruntime_compile_triton_kernel.cmake)
+    compile_triton_kernel(triton_kernel_obj_file triton_kernel_header_dir)
+    add_dependencies(onnxruntime_providers_cuda onnxruntime_triton_kernel)
+    target_compile_definitions(onnxruntime_providers_cuda PRIVATE USE_TRITON_KERNEL)
+    target_include_directories(onnxruntime_providers_cuda PRIVATE ${triton_kernel_header_dir})
+    target_link_libraries(onnxruntime_providers_cuda PUBLIC -Wl,--whole-archive ${triton_kernel_obj_file} -Wl,--no-whole-archive)
+    # lib cuda needed by cuLaunchKernel
+    target_link_libraries(onnxruntime_providers_cuda PRIVATE cuda)
   endif()
 
   if (onnxruntime_USE_FLASH_ATTENTION)
@@ -528,10 +547,12 @@ if (onnxruntime_USE_CUDA)
 
   if (WIN32)
     # *.cu cannot use PCH
-    target_precompile_headers(onnxruntime_providers_cuda PUBLIC
-      "${ONNXRUNTIME_ROOT}/core/providers/cuda/cuda_pch.h"
-      "${ONNXRUNTIME_ROOT}/core/providers/cuda/cuda_pch.cc"
-    )
+    if (NOT onnxruntime_BUILD_CACHE)
+      target_precompile_headers(onnxruntime_providers_cuda PUBLIC
+        "${ONNXRUNTIME_ROOT}/core/providers/cuda/cuda_pch.h"
+        "${ONNXRUNTIME_ROOT}/core/providers/cuda/cuda_pch.cc"
+      )
+    endif()
 
     # minimize the Windows includes.
     # this avoids an issue with CUDA 11.6 where 'small' is defined in the windows and cuda headers.
@@ -548,10 +569,10 @@ if (onnxruntime_USE_CUDA)
 
   if(APPLE)
     set_property(TARGET onnxruntime_providers_cuda APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker -exported_symbols_list ${ONNXRUNTIME_ROOT}/core/providers/cuda/exported_symbols.lst")
-    target_link_libraries(onnxruntime_providers_cuda PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_cuda PRIVATE nsync::nsync_cpp)
   elseif(UNIX)
     set_property(TARGET onnxruntime_providers_cuda APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker --version-script=${ONNXRUNTIME_ROOT}/core/providers/cuda/version_script.lds -Xlinker --gc-sections")
-    target_link_libraries(onnxruntime_providers_cuda PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_cuda PRIVATE nsync::nsync_cpp)
   elseif(WIN32)
     set_property(TARGET onnxruntime_providers_cuda APPEND_STRING PROPERTY LINK_FLAGS "-DEF:${ONNXRUNTIME_ROOT}/core/providers/cuda/symbols.def")
   else()
@@ -588,7 +609,7 @@ if (onnxruntime_USE_DNNL)
   add_dependencies(onnxruntime_providers_dnnl onnxruntime_providers_shared project_dnnl ${onnxruntime_EXTERNAL_DEPENDENCIES})
   target_include_directories(onnxruntime_providers_dnnl PRIVATE ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${DNNL_INCLUDE_DIR} ${DNNL_OCL_INCLUDE_DIR})
   # ${CMAKE_CURRENT_BINARY_DIR} is so that #include "onnxruntime_config.h" inside tensor_shape.h is found
-  target_link_libraries(onnxruntime_providers_dnnl PRIVATE dnnl ${ONNXRUNTIME_PROVIDERS_SHARED} Boost::mp11 ${ABSEIL_LIBS} ${GSL_TARGET})
+  target_link_libraries(onnxruntime_providers_dnnl PRIVATE dnnl ${ONNXRUNTIME_PROVIDERS_SHARED} Boost::mp11 ${ABSEIL_LIBS} ${GSL_TARGET} safeint_interface)
   install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/dnnl  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
   set_target_properties(onnxruntime_providers_dnnl PROPERTIES FOLDER "ONNXRuntime")
   set_target_properties(onnxruntime_providers_dnnl PROPERTIES LINKER_LANGUAGE CXX)
@@ -609,10 +630,10 @@ if (onnxruntime_USE_DNNL)
       INSTALL_RPATH "@loader_path"
       BUILD_WITH_INSTALL_RPATH TRUE
       INSTALL_RPATH_USE_LINK_PATH FALSE)
-    target_link_libraries(onnxruntime_providers_dnnl PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_dnnl PRIVATE nsync::nsync_cpp)
   elseif(UNIX)
     set_property(TARGET onnxruntime_providers_dnnl APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker --version-script=${ONNXRUNTIME_ROOT}/core/providers/dnnl/version_script.lds -Xlinker --gc-sections -Xlinker -rpath=\$ORIGIN")
-    target_link_libraries(onnxruntime_providers_dnnl PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_dnnl PRIVATE nsync::nsync_cpp)
   elseif(WIN32)
     set_property(TARGET onnxruntime_providers_dnnl APPEND_STRING PROPERTY LINK_FLAGS "-DEF:${ONNXRUNTIME_ROOT}/core/providers/dnnl/symbols.def")
   else()
@@ -696,7 +717,9 @@ if (onnxruntime_USE_TENSORRT)
   endif()
 
   include_directories(${TENSORRT_INCLUDE_DIR})
-
+  # ${TENSORRT_LIBRARY} is empty if we link nvonnxparser_static.
+  # nvonnxparser_static is linked against tensorrt libraries in onnx-tensorrt
+  # See https://github.com/onnx/onnx-tensorrt/blob/8af13d1b106f58df1e98945a5e7c851ddb5f0791/CMakeLists.txt#L121
   set(trt_link_libs cudnn cublas ${CMAKE_DL_LIBS} ${TENSORRT_LIBRARY})
 
   file(GLOB_RECURSE onnxruntime_providers_tensorrt_cc_srcs CONFIGURE_DEPENDS
@@ -742,11 +765,11 @@ if (onnxruntime_USE_TENSORRT)
 
   if(APPLE)
     set_property(TARGET onnxruntime_providers_tensorrt APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker -exported_symbols_list ${ONNXRUNTIME_ROOT}/core/providers/tensorrt/exported_symbols.lst")
-    target_link_libraries(onnxruntime_providers_tensorrt PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_tensorrt PRIVATE nsync::nsync_cpp)
   elseif(UNIX)
     set_property(TARGET onnxruntime_providers_tensorrt APPEND_STRING PROPERTY COMPILE_FLAGS "-Wno-deprecated-declarations")
     set_property(TARGET onnxruntime_providers_tensorrt APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker --version-script=${ONNXRUNTIME_ROOT}/core/providers/tensorrt/version_script.lds -Xlinker --gc-sections")
-    target_link_libraries(onnxruntime_providers_tensorrt PRIVATE nsync_cpp stdc++fs)
+    target_link_libraries(onnxruntime_providers_tensorrt PRIVATE nsync::nsync_cpp stdc++fs)
   elseif(WIN32)
     set_property(TARGET onnxruntime_providers_tensorrt APPEND_STRING PROPERTY LINK_FLAGS "-DEF:${ONNXRUNTIME_ROOT}/core/providers/tensorrt/symbols.def")
   else()
@@ -760,22 +783,46 @@ if (onnxruntime_USE_TENSORRT)
 endif()
 
 if (onnxruntime_USE_VITISAI)
-  file(GLOB_RECURSE onnxruntime_providers_vitisai_cc_srcs CONFIGURE_DEPENDS
-    "${ONNXRUNTIME_ROOT}/core/providers/vitisai/*.h"
+  if ("${GIT_COMMIT_ID}" STREQUAL "")
+  execute_process(
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMAND git rev-parse HEAD
+    OUTPUT_VARIABLE GIT_COMMIT_ID
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  endif()
+  configure_file(${ONNXRUNTIME_ROOT}/core/providers/vitisai/imp/version_info.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/VitisAI/version_info.h)
+  file(GLOB onnxruntime_providers_vitisai_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/vitisai/*.cc"
+    "${ONNXRUNTIME_ROOT}/core/providers/vitisai/*.h"
+    "${ONNXRUNTIME_ROOT}/core/providers/vitisai/imp/*.cc"
+    "${ONNXRUNTIME_ROOT}/core/providers/vitisai/imp/*.h"
   )
-
+  list(REMOVE_ITEM onnxruntime_providers_vitisai_cc_srcs "${ONNXRUNTIME_ROOT}/core/providers/vitisai/onnxruntime_vitisai_ep_stub.cc")
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_vitisai_cc_srcs})
   onnxruntime_add_static_library(onnxruntime_providers_vitisai ${onnxruntime_providers_vitisai_cc_srcs})
-  onnxruntime_add_include_to_target(onnxruntime_providers_vitisai
-    onnxruntime_common onnxruntime_framework onnx onnx_proto ${PROTOBUF_LIB} flatbuffers::flatbuffers Boost::mp11 safeint_interface
-  )
-  add_dependencies(onnxruntime_providers_vitisai ${onnxruntime_EXTERNAL_DEPENDENCIES})
+  onnxruntime_add_include_to_target(onnxruntime_providers_vitisai onnxruntime_common onnxruntime_framework onnx onnx_proto)
+  onnxruntime_add_shared_library(onnxruntime_vitisai_ep ${ONNXRUNTIME_ROOT}/core/providers/vitisai/onnxruntime_vitisai_ep_stub.cc)
+  onnxruntime_add_include_to_target(onnxruntime_vitisai_ep onnxruntime_common)
+  target_include_directories(onnxruntime_vitisai_ep PRIVATE "${ONNXRUNTIME_ROOT}" "${ONNXRUNTIME_ROOT}/core/providers/vitisai/include")
+  target_link_libraries(onnxruntime_providers_vitisai PUBLIC onnxruntime_vitisai_ep PRIVATE onnx protobuf::libprotobuf nlohmann_json::nlohmann_json )
+  target_compile_definitions(onnxruntime_vitisai_ep
+                           PRIVATE "-DONNXRUNTIME_VITISAI_EP_STUB=1" "-DONNXRUNTIME_VITISAI_EP_EXPORT_DLL=1")
+  if(NOT MSVC)
+    target_compile_options(onnxruntime_providers_vitisai PUBLIC $<$<CONFIG:DEBUG>:-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0>)
+  endif(NOT MSVC)
+
+  target_include_directories(onnxruntime_providers_vitisai PRIVATE "${ONNXRUNTIME_ROOT}/core/providers/vitisai/include" ${XRT_INCLUDE_DIRS} ${CMAKE_CURRENT_BINARY_DIR}/VitisAI)
+  if(MSVC)
+    target_compile_options(onnxruntime_providers_vitisai PRIVATE "/Zc:__cplusplus")
+    # for dll interface warning.
+    target_compile_options(onnxruntime_providers_vitisai PRIVATE "/wd4251")
+    # for unused formal parameter
+    target_compile_options(onnxruntime_providers_vitisai PRIVATE "/wd4100")
+  else(MSVC)
+    target_compile_options(onnxruntime_providers_vitisai PRIVATE -Wno-unused-parameter)
+  endif(MSVC)
+
   set_target_properties(onnxruntime_providers_vitisai PROPERTIES FOLDER "ONNXRuntime")
-  target_include_directories(onnxruntime_providers_vitisai PRIVATE ${ONNXRUNTIME_ROOT} ${eigen_INCLUDE_DIRS} ${VITISAI_INCLUDE_DIR})
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/vitisai
-    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers
-  )
   set_target_properties(onnxruntime_providers_vitisai PROPERTIES LINKER_LANGUAGE CXX)
 
   if (NOT onnxruntime_BUILD_SHARED_LIB)
@@ -975,6 +1022,31 @@ if (onnxruntime_USE_COREML)
   endif()
 endif()
 
+if (onnxruntime_USE_WEBNN)
+  if (onnxruntime_MINIMAL_BUILD AND NOT onnxruntime_EXTENDED_MINIMAL_BUILD)
+    message(FATAL_ERROR "WebNN EP can not be used in a basic minimal build. Please build with '--minimal_build extended'")
+  endif()
+
+  add_compile_definitions(USE_WEBNN=1)
+  if (onnxruntime_ENABLE_WEBASSEMBLY_THREADS)
+    add_definitions(-DENABLE_WEBASSEMBLY_THREADS=1)
+  endif()
+  file(GLOB_RECURSE onnxruntime_providers_webnn_cc_srcs CONFIGURE_DEPENDS
+    "${ONNXRUNTIME_ROOT}/core/providers/webnn/*.h"
+    "${ONNXRUNTIME_ROOT}/core/providers/webnn/*.cc"
+    "${ONNXRUNTIME_ROOT}/core/providers/shared/utils/utils.h"
+    "${ONNXRUNTIME_ROOT}/core/providers/shared/utils/utils.cc"
+  )
+
+  source_group(TREE ${REPO_ROOT} FILES ${onnxruntime_providers_webnn_cc_srcs})
+  onnxruntime_add_static_library(onnxruntime_providers_webnn ${onnxruntime_providers_webnn_cc_srcs})
+  onnxruntime_add_include_to_target(onnxruntime_providers_webnn onnxruntime_common onnx onnx_proto Boost::mp11)
+
+  add_dependencies(onnxruntime_providers_webnn onnx ${onnxruntime_EXTERNAL_DEPENDENCIES})
+  set_target_properties(onnxruntime_providers_webnn PROPERTIES FOLDER "ONNXRuntime")
+  set_target_properties(onnxruntime_providers_webnn PROPERTIES LINKER_LANGUAGE CXX)
+endif()
+
 if (onnxruntime_USE_NNAPI_BUILTIN)
   if (onnxruntime_MINIMAL_BUILD AND NOT onnxruntime_EXTENDED_MINIMAL_BUILD)
     message(FATAL_ERROR "NNAPI can not be used in a basic minimal build. Please build with '--minimal_build extended'")
@@ -1059,6 +1131,24 @@ if (onnxruntime_USE_NNAPI_BUILTIN)
   endif()
 endif()
 
+if (onnxruntime_USE_JSEP)
+  add_compile_definitions(USE_JSEP=1)
+
+  file(GLOB_RECURSE onnxruntime_providers_js_cc_srcs
+    "${ONNXRUNTIME_ROOT}/core/providers/js/*.h"
+    "${ONNXRUNTIME_ROOT}/core/providers/js/*.cc"
+  )
+
+  source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_js_cc_srcs})
+  onnxruntime_add_static_library(onnxruntime_providers_js ${onnxruntime_providers_js_cc_srcs})
+  onnxruntime_add_include_to_target(onnxruntime_providers_js
+    onnxruntime_common onnxruntime_framework onnx onnx_proto ${PROTOBUF_LIB} flatbuffers Boost::mp11
+  )
+
+  add_dependencies(onnxruntime_providers_js ${onnxruntime_EXTERNAL_DEPENDENCIES})
+
+endif()
+
 if (onnxruntime_USE_QNN)
   add_compile_definitions(USE_QNN=1)
 
@@ -1091,12 +1181,12 @@ if (onnxruntime_USE_QNN)
 
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_qnn_cc_srcs})
   onnxruntime_add_static_library(onnxruntime_providers_qnn ${onnxruntime_providers_qnn_cc_srcs})
-  onnxruntime_add_include_to_target(onnxruntime_providers_qnn onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf-lite flatbuffers Boost::mp11)
+  onnxruntime_add_include_to_target(onnxruntime_providers_qnn onnxruntime_common onnxruntime_framework onnx onnx_proto protobuf::libprotobuf-lite flatbuffers::flatbuffers Boost::mp11)
   target_link_libraries(onnxruntime_providers_qnn)
   add_dependencies(onnxruntime_providers_qnn onnx ${onnxruntime_EXTERNAL_DEPENDENCIES})
   set_target_properties(onnxruntime_providers_qnn PROPERTIES CXX_STANDARD_REQUIRED ON)
   set_target_properties(onnxruntime_providers_qnn PROPERTIES FOLDER "ONNXRuntime")
-  target_include_directories(onnxruntime_providers_qnn PRIVATE ${ONNXRUNTIME_ROOT} ${onnxruntime_QNN_HOME}/include)
+  target_include_directories(onnxruntime_providers_qnn PRIVATE ${ONNXRUNTIME_ROOT} ${onnxruntime_QNN_HOME}/include/QNN ${onnxruntime_QNN_HOME}/include)
   set_target_properties(onnxruntime_providers_qnn PROPERTIES LINKER_LANGUAGE CXX)
   # ignore the warning unknown-pragmas on "pragma region"
   if(NOT MSVC)
@@ -1164,7 +1254,10 @@ if (onnxruntime_USE_DML)
     ${ONNXRUNTIME_ROOT}
   )
 
-  add_definitions(-DDML_TARGET_VERSION_USE_LATEST=1)
+  target_compile_definitions(onnxruntime_providers_dml PRIVATE DML_TARGET_VERSION_USE_LATEST=1)
+  if(WIN32)
+    target_compile_options(onnxruntime_providers_dml PRIVATE "/wd4100" "/wd4238" "/wd4189" "/wd4702")
+  endif()
 
   if (NOT onnxruntime_USE_CUSTOM_DIRECTML)
     foreach(file "DirectML.dll" "DirectML.pdb" "DirectML.Debug.dll" "DirectML.Debug.pdb")
@@ -1260,7 +1353,10 @@ if (onnxruntime_USE_MIGRAPHX)
   find_package(hip)
   find_package(migraphx PATHS ${AMD_MIGRAPHX_HOME})
 
-  set(migraphx_libs migraphx::c hip::host)
+  find_package(miopen)
+  find_package(rocblas)
+
+  set(migraphx_libs migraphx::c hip::host MIOpen roc::rocblas)
 
   file(GLOB_RECURSE onnxruntime_providers_migraphx_cc_srcs CONFIGURE_DEPENDS
     "${ONNXRUNTIME_ROOT}/core/providers/migraphx/*.h"
@@ -1283,7 +1379,7 @@ if (onnxruntime_USE_MIGRAPHX)
   target_compile_options(onnxruntime_providers_migraphx PRIVATE -Wno-error=sign-compare)
   set_property(TARGET onnxruntime_providers_migraphx APPEND_STRING PROPERTY COMPILE_FLAGS "-Wno-deprecated-declarations")
   set_property(TARGET onnxruntime_providers_migraphx APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker --version-script=${ONNXRUNTIME_ROOT}/core/providers/migraphx/version_script.lds -Xlinker --gc-sections")
-  target_link_libraries(onnxruntime_providers_migraphx PRIVATE nsync_cpp stdc++fs)
+  target_link_libraries(onnxruntime_providers_migraphx PRIVATE nsync::nsync_cpp stdc++fs)
 
   include(CheckLibraryExists)
   check_library_exists(migraphx::c "migraphx_program_run_async" "/opt/rocm/migraphx/lib" HAS_STREAM_SYNC)
@@ -1378,6 +1474,33 @@ if (onnxruntime_USE_ROCM)
   find_package(hiprand REQUIRED)
   find_package(rocblas REQUIRED)
   find_package(MIOpen REQUIRED)
+
+  # MIOpen version
+  if(NOT DEFINED ENV{MIOPEN_PATH})
+    set(MIOPEN_PATH ${onnxruntime_ROCM_HOME}/miopen)
+  else()
+    set(MIOPEN_PATH $ENV{MIOPEN_PATH})
+  endif()
+
+  file(READ ${MIOPEN_PATH}/include/miopen/version.h MIOPEN_HEADER_CONTENTS)
+        string(REGEX MATCH "define MIOPEN_VERSION_MAJOR * +([0-9]+)"
+                                 MIOPEN_VERSION_MAJOR "${MIOPEN_HEADER_CONTENTS}")
+        string(REGEX REPLACE "define MIOPEN_VERSION_MAJOR * +([0-9]+)" "\\1"
+                                 MIOPEN_VERSION_MAJOR "${MIOPEN_VERSION_MAJOR}")
+        string(REGEX MATCH "define MIOPEN_VERSION_MINOR * +([0-9]+)"
+                                 MIOPEN_VERSION_MINOR "${MIOPEN_HEADER_CONTENTS}")
+        string(REGEX REPLACE "define MIOPEN_VERSION_MINOR * +([0-9]+)" "\\1"
+                                 MIOPEN_VERSION_MINOR "${MIOPEN_VERSION_MINOR}")
+        string(REGEX MATCH "define MIOPEN_VERSION_PATCH * +([0-9]+)"
+                                 MIOPEN_VERSION_PATCH "${MIOPEN_HEADER_CONTENTS}")
+        string(REGEX REPLACE "define MIOPEN_VERSION_PATCH * +([0-9]+)" "\\1"
+                                 MIOPEN_VERSION_PATCH "${MIOPEN_VERSION_PATCH}")
+  set(MIOPEN_VERSION_DEV "${MIOPEN_VERSION_MAJOR}.${MIOPEN_VERSION_MINOR}.${MIOPEN_VERSION_PATCH}")
+  math(EXPR MIOPEN_VERSION_DEV_INT "(${MIOPEN_VERSION_MAJOR}*10000) + (${MIOPEN_VERSION_MINOR}*100) + ${MIOPEN_VERSION_PATCH}")
+  message("MIOPEN_VERSION_DEV: ${MIOPEN_VERSION_DEV}")
+  message("MIOPEN_VERSION_DEV_INT:   ${MIOPEN_VERSION_DEV_INT}")
+  add_definitions(-DMIOPEN_VERSION=${MIOPEN_VERSION_DEV_INT})
+
   find_library(RCCL_LIB rccl REQUIRED)
   find_library(ROCTRACER_LIB roctracer64 REQUIRED)
   set(ONNXRUNTIME_ROCM_LIBS roc::rocblas MIOpen ${RCCL_LIB} ${ROCTRACER_LIB})
@@ -1479,7 +1602,6 @@ if (onnxruntime_USE_ROCM)
     PUBLIC
       ${onnxruntime_ROCM_HOME}/include
       ${onnxruntime_ROCM_HOME}/include/roctracer)
-  install(DIRECTORY ${PROJECT_SOURCE_DIR}/../include/onnxruntime/core/providers/rocm  DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/onnxruntime/core/providers)
 
   set_target_properties(onnxruntime_providers_rocm PROPERTIES LINKER_LANGUAGE CXX)
   set_target_properties(onnxruntime_providers_rocm PROPERTIES FOLDER "ONNXRuntime")
@@ -1503,13 +1625,30 @@ if (onnxruntime_USE_ROCM)
     target_compile_definitions(onnxruntime_providers_rocm PRIVATE ROCBLAS_BETA_FEATURES_API)
   endif()
 
+  if (onnxruntime_USE_HIPBLASLT)
+    find_package(hipblaslt REQUIRED)
+    target_link_libraries(onnxruntime_providers_rocm PRIVATE roc::hipblaslt)
+    target_compile_definitions(onnxruntime_providers_rocm PRIVATE USE_HIPBLASLT)
+  endif()
+
+  if (onnxruntime_USE_TRITON_KERNEL)
+    # compile triton kernel, generate .a and .h files
+    include(onnxruntime_compile_triton_kernel.cmake)
+    compile_triton_kernel(triton_kernel_obj_file triton_kernel_header_dir)
+    add_dependencies(onnxruntime_providers_rocm onnxruntime_triton_kernel)
+    target_compile_definitions(onnxruntime_providers_rocm PRIVATE USE_TRITON_KERNEL)
+    target_include_directories(onnxruntime_providers_rocm PRIVATE ${triton_kernel_header_dir})
+    target_link_libraries(onnxruntime_providers_rocm PUBLIC -Wl,--whole-archive ${triton_kernel_obj_file} -Wl,--no-whole-archive)
+  endif()
+
   if (onnxruntime_USE_COMPOSABLE_KERNEL)
     include(composable_kernel)
     target_link_libraries(onnxruntime_providers_rocm PRIVATE
       onnxruntime_composable_kernel_includes
       # Currently we shall not use composablekernels::device_operations, the target includes all conv dependencies, which
-      # are extremely slow to compile. Instead, we only link all gemm related objects. See the following link on updating.
-      # https://github.com/ROCmSoftwarePlatform/composable_kernel/blob/85978e0201/library/src/tensor_operation_instance/gpu/CMakeLists.txt#L33-L54
+      # are extremely slow to compile. Instead, we only link all gemm related objects. See the following directory on
+      # updating.
+      # https://github.com/ROCmSoftwarePlatform/composable_kernel/tree/develop/library/src/tensor_operation_instance/gpu
       device_gemm_instance
       device_gemm_add_fastgelu_instance
       device_gemm_fastgelu_instance
@@ -1521,7 +1660,7 @@ if (onnxruntime_USE_ROCM)
 
   if(UNIX)
     set_property(TARGET onnxruntime_providers_rocm APPEND_STRING PROPERTY LINK_FLAGS "-Xlinker --version-script=${ONNXRUNTIME_ROOT}/core/providers/rocm/version_script.lds -Xlinker --gc-sections")
-    target_link_libraries(onnxruntime_providers_rocm PRIVATE nsync_cpp)
+    target_link_libraries(onnxruntime_providers_rocm PRIVATE nsync::nsync_cpp)
   else()
     message(FATAL_ERROR "onnxruntime_providers_rocm unknown platform, need to specify shared library exports for it")
   endif()
@@ -1657,7 +1796,7 @@ if (onnxruntime_USE_CANN)
   onnxruntime_add_include_to_target(onnxruntime_providers_cann onnxruntime_common onnxruntime_framework onnx onnx_proto ${PROTOBUF_LIB} flatbuffers::flatbuffers Boost::mp11 safeint_interface)
 
   add_dependencies(onnxruntime_providers_cann onnxruntime_providers_shared ${onnxruntime_EXTERNAL_DEPENDENCIES})
-  target_link_libraries(onnxruntime_providers_cann PRIVATE ascendcl acl_op_compiler fmk_onnx_parser nsync_cpp ${ABSEIL_LIBS} ${ONNXRUNTIME_PROVIDERS_SHARED})
+  target_link_libraries(onnxruntime_providers_cann PRIVATE ascendcl acl_op_compiler fmk_onnx_parser nsync::nsync_cpp ${ABSEIL_LIBS} ${ONNXRUNTIME_PROVIDERS_SHARED})
   target_link_directories(onnxruntime_providers_cann PRIVATE ${onnxruntime_CANN_HOME}/lib64)
   target_include_directories(onnxruntime_providers_cann PRIVATE ${ONNXRUNTIME_ROOT} ${CMAKE_CURRENT_BINARY_DIR} ${eigen_INCLUDE_DIRS} ${onnxruntime_CANN_HOME} ${onnxruntime_CANN_HOME}/include)
 
@@ -1679,7 +1818,7 @@ if (onnxruntime_USE_AZURE)
   source_group(TREE ${ONNXRUNTIME_ROOT}/core FILES ${onnxruntime_providers_azure_src})
   onnxruntime_add_static_library(onnxruntime_providers_azure ${onnxruntime_providers_azure_src})
   add_dependencies(onnxruntime_providers_azure ${onnxruntime_EXTERNAL_DEPENDENCIES})
-  onnxruntime_add_include_to_target(onnxruntime_providers_azure onnxruntime_common onnxruntime_framework onnx onnx_proto ${PROTOBUF_LIB} flatbuffers Boost::mp11)
+  onnxruntime_add_include_to_target(onnxruntime_providers_azure onnxruntime_common onnxruntime_framework onnx onnx_proto ${PROTOBUF_LIB} flatbuffers::flatbuffers Boost::mp11)
   target_link_libraries(onnxruntime_providers_azure PRIVATE onnx onnxruntime_common onnxruntime_framework)
   set_target_properties(onnxruntime_providers_azure PROPERTIES FOLDER "ONNXRuntime")
   set_target_properties(onnxruntime_providers_azure PROPERTIES LINKER_LANGUAGE CXX)

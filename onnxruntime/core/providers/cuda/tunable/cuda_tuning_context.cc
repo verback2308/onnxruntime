@@ -51,16 +51,38 @@ CudaTuningContext::CudaTuningContext(CUDAExecutionProvider* ep, TunableOpInfo* i
 
 void CudaTuningContext::EnableTunableOp() {
   LOGS_DEFAULT(INFO) << "Enable TunableOp for CUDA Execution Provider";
-  info_->enabled = true;
+  info_->enable = true;
 }
 
 void CudaTuningContext::DisableTunableOp() {
   LOGS_DEFAULT(INFO) << "Disable TunableOp for CUDA Execution Provider";
-  info_->enabled = false;
+  info_->enable = false;
 }
 
 bool CudaTuningContext::IsTunableOpEnabled() const {
-  return info_->enabled;
+  return info_->enable;
+}
+
+void CudaTuningContext::EnableTuning() {
+  LOGS_DEFAULT(INFO) << "Enable TunableOp tuning for CUDA Execution Provider";
+  info_->tuning_enable = true;
+}
+
+void CudaTuningContext::DisableTuning() {
+  LOGS_DEFAULT(INFO) << "Disable TunableOp tuning for CUDA Execution Provider";
+  info_->tuning_enable = false;
+}
+
+bool CudaTuningContext::IsTuningEnabled() const {
+  return info_->tuning_enable;
+}
+
+void CudaTuningContext::SetMaxTuningDurationMs(int max_duration_ms) {
+  info_->max_tuning_duration_ms = max_duration_ms;
+}
+
+int CudaTuningContext::GetMaxTuningDurationMs() const {
+  return info_->max_tuning_duration_ms > 0 ? info_->max_tuning_duration_ms : std::numeric_limits<int>::max();
 }
 
 TuningResultsManager& CudaTuningContext::GetTuningResultsManager() {

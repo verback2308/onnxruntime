@@ -3,7 +3,6 @@
 
 #include "core/providers/common.h"
 #include "core/providers/shared/utils/utils.h"
-#include "core/framework/tensorprotoutils.h"
 #include "core/providers/qnn/builder/qnn_model_wrapper.h"
 #include "core/providers/qnn/builder/op_builder_factory.h"
 #include "core/providers/cpu/tensor/slice_helper.h"
@@ -12,9 +11,6 @@
 
 namespace onnxruntime {
 namespace qnn {
-
-const int SLICE_MIN_INPUT = 3;
-const int SLICE_MAX_INPUT = 5;
 
 class SliceOpBuilder : public BaseOpBuilder {
  public:
@@ -38,6 +34,10 @@ class SliceOpBuilder : public BaseOpBuilder {
 
  private:
   Status ExplictOpCheck(QnnModelWrapper& qnn_model_wrapper, const NodeUnit& node_unit) const;
+  void GetDataFromAttribute(const NodeUnit& node_unit,
+                            TensorShapeVector& raw_starts,
+                            TensorShapeVector& raw_ends,
+                            TensorShapeVector& raw_axes) const;
   typedef struct {
     int32_t begin, end, stride;
   } Range;
@@ -46,17 +46,34 @@ class SliceOpBuilder : public BaseOpBuilder {
 
 Status SliceOpBuilder::ExplictOpCheck(QnnModelWrapper& qnn_model_wrapper, const NodeUnit& node_unit) const {
   size_t input_count = node_unit.Inputs().size();
-  ORT_RETURN_IF_NOT(input_count >= SLICE_MIN_INPUT && input_count <= SLICE_MAX_INPUT,
-                    "For ONNX Slice operation the expected number of inputs is between 3 and 5.");
-  // Skip the first input. All other input need to be initializer
-  for (size_t i = 1; i < node_unit.Inputs().size(); i++) {
-    const auto& next_input = node_unit.Inputs()[i].node_arg.Name();
-    if (!qnn_model_wrapper.IsInitializerInput(next_input)) {
-      return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "QNN desn't support dynamic slice.");
+  // Op set 9 only has 1 input with starts, ends, axes attribute
+  // Op set > 9, starts, ends, axes are from node input
+  if (input_count > 1) {
+    // Skip the first input. All other input need to be initializer
+    for (size_t i = 1; i < input_count; i++) {
+      const auto& next_input = node_unit.Inputs()[i].node_arg.Name();
+      if (!qnn_model_wrapper.IsInitializerInput(next_input)) {
+        return ORT_MAKE_STATUS(ONNXRUNTIME, FAIL, "QNN desn't support dynamic slice.");
+      }
     }
   }
 
   return Status::OK();
+}
+
+void SliceOpBuilder::GetDataFromAttribute(const NodeUnit& node_unit,
+                                          TensorShapeVector& raw_starts,
+                                          TensorShapeVector& raw_ends,
+                                          TensorShapeVector& raw_axes) const {
+  NodeAttrHelper node_helper(node_unit);
+  auto starts = node_helper.Get("starts", std::vector<int64_t>{0});
+  raw_starts.assign(starts.begin(), starts.end());
+  auto ends = node_helper.Get("ends", std::vector<int64_t>{0});
+  raw_ends.assign(ends.begin(), ends.end());
+  if (node_helper.HasAttr("axes")) {
+    auto axes = node_helper.Get("axes", std::vector<int64_t>{0});
+    raw_axes.assign(axes.begin(), axes.end());
+  }
 }
 
 // Note: For ONNX Slice operation the expected number of inputs is between 3 and 5
@@ -79,7 +96,13 @@ Status SliceOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
   std::vector<uint32_t> input0_shape;
 
   auto inputs = node_unit.Inputs();
-  for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+  auto input_count = inputs.size();
+  // Opset 9, only 1 input, starts, ends, axes are in attribute
+  if (1 == input_count) {
+    GetDataFromAttribute(node_unit, raw_starts, raw_ends, raw_axes);
+  }
+
+  for (size_t input_i = 0; input_i < input_count; ++input_i) {
     auto& input_name = inputs[input_i].node_arg.Name();
     if (input_name.empty()) {
       // Ignore unspecified/unused optional input
@@ -107,7 +130,7 @@ Status SliceOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
     bool is_initializer_input = qnn_model_wrapper.IsInitializerInput(input_name);
     if (is_initializer_input) {
       const auto& input_tensor = qnn_model_wrapper.GetInitializerTensors().at(input_name);
-      ORT_RETURN_IF_ERROR(onnxruntime::utils::UnpackInitializerData(*input_tensor, unpacked_tensor));
+      ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(*input_tensor, unpacked_tensor));
       size_t tensor_byte_size = unpacked_tensor.size();
       const auto data_type = input_tensor->data_type();
       TensorShapeVector data;
@@ -144,7 +167,6 @@ Status SliceOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
         continue;
       }
     }
-    ORT_ENFORCE(input_i == 0, "QNN ReluMinMax operator expects only one input. other inputs, starts, ends, axes and steps are expected to be parameters, ie. initializer inputs in ONNX model");
     input0_shape = input_shape;
 
     input_names.push_back(input_name);
@@ -195,7 +217,7 @@ Status SliceOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_model_wr
                                      {param_tensor_name},
                                      logger,
                                      is_quantized_model,
-                                     do_op_validation));
+                                     do_op_validation, GetQnnOpType(node_unit.OpType())));
   return Status::OK();
 }
 

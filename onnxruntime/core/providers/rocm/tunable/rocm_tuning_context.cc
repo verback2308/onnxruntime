@@ -74,6 +74,12 @@ std::string RocmTuningResultsValidator::GetOrtBuildConfig() const {
 #else
   oss << "USE_ROCBLAS_EXTENSION_API=" << 0 << "|";
 #endif
+
+#ifdef USE_HIPBLASLT
+  oss << "USE_HIPBLASLT=" << 1 << "|";
+#else
+  oss << "USE_HIPBLASLT=" << 0 << "|";
+#endif
   return oss.str();
 }
 
@@ -82,16 +88,38 @@ RocmTuningContext::RocmTuningContext(ROCMExecutionProvider* ep, TunableOpInfo* i
 
 void RocmTuningContext::EnableTunableOp() {
   LOGS_DEFAULT(INFO) << "Enable TunableOp for ROCm Execution Provider";
-  info_->enabled = true;
+  info_->enable = true;
 }
 
 void RocmTuningContext::DisableTunableOp() {
   LOGS_DEFAULT(INFO) << "Disable TunableOp for ROCm Execution Provider";
-  info_->enabled = false;
+  info_->enable = false;
 }
 
 bool RocmTuningContext::IsTunableOpEnabled() const {
-  return info_->enabled;
+  return info_->enable;
+}
+
+void RocmTuningContext::EnableTuning() {
+  LOGS_DEFAULT(INFO) << "Enable TunableOp tuning for ROCm Execution Provider";
+  info_->tuning_enable = true;
+}
+
+void RocmTuningContext::DisableTuning() {
+  LOGS_DEFAULT(INFO) << "Disable TunableOp tuning for ROCm Execution Provider";
+  info_->tuning_enable = false;
+}
+
+bool RocmTuningContext::IsTuningEnabled() const {
+  return info_->tuning_enable;
+}
+
+void RocmTuningContext::SetMaxTuningDurationMs(int max_duration_ms) {
+  info_->max_tuning_duration_ms = max_duration_ms;
+}
+
+int RocmTuningContext::GetMaxTuningDurationMs() const {
+  return info_->max_tuning_duration_ms > 0 ? info_->max_tuning_duration_ms : std::numeric_limits<int>::max();
 }
 
 TuningResultsManager& RocmTuningContext::GetTuningResultsManager() {

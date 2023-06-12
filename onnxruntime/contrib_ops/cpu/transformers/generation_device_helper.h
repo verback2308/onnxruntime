@@ -39,6 +39,10 @@ using ReorderPastStateFunc = std::function<Status(
     Tensor& past_state_staging,
     Stream* stream)>;  // cublasHandle_t
 
+using InitCacheIndirFunc = std::function<Status(
+    Tensor& cache_indir,
+    Stream* stream)>;
+
 using TopkFunc = std::function<Status(
     const Tensor* input, const int axis, const unsigned k, bool largest, bool sorted,
     AllocatorPtr allocator,
@@ -128,12 +132,15 @@ using UpdateGptFeedsFunc = std::function<Status(
     OrtValue& position_ids,
     bool increase_position,
     gsl::span<const int32_t> beam_next_tokens,
-    gsl::span<const int32_t> beam_indices,
+    gsl::span<const int32_t> beam_indices_cpu,
+    gsl::span<const int32_t> beam_indices_gpu,
     int num_beams,
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len)>;
+    int past_sequence_len,
+    int input_sequence_len,
+    bool need_cache_indir)>;
 
 // Create encoder inputs (for encoder-decoder model like T5).
 using CreateEncoderInputsFunc = std::function<Status(
@@ -156,13 +163,28 @@ using UpdateDecoderFeedsFunc = std::function<Status(
     int num_present_tensors,
     gsl::span<const int32_t> beam_next_tokens,
     gsl::span<const int32_t> beam_indices,
+    gsl::span<const int32_t> beam_indices_gpu,
     int num_beams,
     int t5_decoder_first_past_input_idx,
     int t5_decoder_first_present_output_idx,
     bool use_sequence_as_input_ids,
     int current_length,
+    int input_sequence_len,
+    bool past_present_share_buffer,
+    bool need_cache_indir,
     transformers::Sequences& sequences,
     const transformers::IConsoleDumper* dumper)>;
+
+//------------------------------------------------
+//  Modified functions for Whisper Model
+//------------------------------------------------
+using CreateWhisperEncoderInputsFunc = std::function<Status(
+    const Tensor* original_encoder_input_features,
+    const OrtValue* original_decoder_input_ids_value,
+    int start_token_id,
+    AllocatorPtr allocator,
+    OrtValue& encoder_input_ids,
+    OrtValue& decoder_input_ids)>;
 
 template <typename T>
 using ExpandBufferFunc = std::function<Status(
@@ -171,7 +193,8 @@ using ExpandBufferFunc = std::function<Status(
     int num_beams,
     AllocatorPtr allocator,
     OrtValue& expanded,
-    bool only_copy_shape)>;
+    bool only_copy_shape,
+    int max_sequence_length)>;
 }  // namespace GenerationDeviceHelper
 
 // These are CPU specific device helper implementations
@@ -262,12 +285,15 @@ Status UpdateGptFeeds(
     OrtValue& position_ids,
     bool increase_position,
     gsl::span<const int32_t> beam_next_tokens,
-    gsl::span<const int32_t> beam_indices,
+    gsl::span<const int32_t> beam_indices_cpu,
+    gsl::span<const int32_t> beam_indices_gpu,
     int num_beams,
     int gpt_subgraph_first_past_input_idx,
     int gpt_subgraph_first_present_output_idx,
     bool past_present_share_buffer,
-    int past_sequence_len);
+    int past_sequence_len,
+    int input_sequence_len,
+    bool need_cache_indir);
 
 // ---------------------------------------------------------------
 // Functions for encoder-decoder model like T5
@@ -292,13 +318,29 @@ Status UpdateDecoderFeeds(
     int num_present_tensors,
     gsl::span<const int32_t> beam_next_tokens,
     gsl::span<const int32_t> beam_indices,
+    gsl::span<const int32_t> beam_indices_gpu,
     int num_beams,
     int t5_decoder_first_past_input_idx,
     int t5_decoder_first_present_output_idx,
     bool use_sequence_as_input_ids,
     int current_length,
+    int input_sequence_len,
+    bool past_present_share_buffer,
+    bool need_cache_indir,
     transformers::Sequences& sequences,
     const transformers::IConsoleDumper* dumper);
+
+// ---------------------------------------------------------------
+// Functions for encoder-decoder model with float input like Whisper
+// ---------------------------------------------------------------
+template <typename T>
+Status CreateWhisperEncoderInputs(
+    const Tensor* original_encoder_input_features,
+    const OrtValue* original_decoder_input_ids_value,
+    int start_token_id,
+    AllocatorPtr allocator,
+    OrtValue& encoder_input_ids,
+    OrtValue& decoder_input_ids);
 
 // ---------------------------------------------------------------
 // Utility Functions
@@ -313,7 +355,8 @@ Status ExpandBuffer(
     int num_beams,
     AllocatorPtr allocator,
     OrtValue& expanded,
-    bool only_copy_shape);
+    bool only_copy_shape,
+    int max_sequence_length);
 
 }  // namespace GenerationCpuDeviceHelper
 }  // namespace contrib

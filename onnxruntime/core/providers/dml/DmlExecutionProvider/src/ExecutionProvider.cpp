@@ -68,7 +68,7 @@ namespace Dml
         IDMLDevice* dmlDevice,
         ID3D12CommandQueue* commandQueue,
         bool enableMetacommands) :
-            IExecutionProvider(onnxruntime::kDmlExecutionProvider)
+            IExecutionProvider(onnxruntime::kDmlExecutionProvider, OrtDevice(OrtDevice::GPU, OrtDevice::MemType::DEFAULT, 0))
     {
         D3D12_COMMAND_LIST_TYPE queueType = commandQueue->GetDesc().Type;
         if (queueType != D3D12_COMMAND_LIST_TYPE_DIRECT && queueType != D3D12_COMMAND_LIST_TYPE_COMPUTE)
@@ -176,6 +176,15 @@ namespace Dml
             sizeof(featureLevels)
             ));
 
+        D3D12_FEATURE_DATA_D3D12_OPTIONS4 featureOptions = {};
+        if (SUCCEEDED(d3d12Device->CheckFeatureSupport(
+            D3D12_FEATURE_D3D12_OPTIONS4,
+            &featureOptions,
+            sizeof(featureOptions))))
+        {
+            m_native16BitShaderOpsSupported = featureOptions.Native16BitShaderOpsSupported;
+        }
+
         m_isMcdmDevice = (featureLevels.MaxSupportedFeatureLevel == D3D_FEATURE_LEVEL_1_0_CORE_PRIVATE);
 
         m_context = std::make_shared<ExecutionContext>(m_d3d12Device.Get(), m_dmlDevice.Get(), queue);
@@ -201,6 +210,8 @@ namespace Dml
         m_cpuOutputAllocator = std::make_shared<CPUAllocator>(OrtMemType::OrtMemTypeCPUOutput);
 
         CreateDmlKernelRegistry(&m_kernelRegistry, &m_internalRegInfoMap);
+
+        m_lastUploadFlushTime = std::chrono::steady_clock::now();
     }
 
     HRESULT __stdcall ExecutionProviderImpl::GetD3DDevice(_COM_Outptr_ ID3D12Device** d3dDevice) const noexcept
@@ -434,10 +445,11 @@ namespace Dml
             ID3D12Resource* dstData = dstAllocInfo->GetResource();
             const void* srcData = src->GetData();
 
-            const uint64_t dstOffset = 0;
+            constexpr uint64_t dstOffset = 0;
             const auto dstState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS; // GPU resources are always kept in UAV state
 
             m_uploadHeap->BeginUploadToGpu(dstData, dstOffset, dstState, AsByteSpan(srcData, dataSizeInBytes));
+            FlushUploadsIfReady();
         }
         else if (!src->IsCpuData() && dst->IsCpuData())
         {
@@ -512,7 +524,7 @@ namespace Dml
             }
 
             dataSizesInBytes.push_back(static_cast<uint32_t>(ComputeByteSizeFromTensor(*dst[i])));
-            ORT_THROW_HR_IF(E_INVALIDARG, dataSizesInBytes[i] != ComputeByteSizeFromTensor(*src[i])); // Tensors must be the same size
+            ORT_THROW_HR_IF(E_INVALIDARG, dataSizesInBytes.back() != ComputeByteSizeFromTensor(*src[i])); // Tensors must be the same size
 
             dstDatas.push_back(dst[i]->GetData());
             const AllocationInfo* srcAllocInfo = m_allocator->DecodeDataHandle(MLOperatorTensor(src[i]).GetDataInterface().Get());
@@ -557,10 +569,21 @@ namespace Dml
         assert(!m_closed);
 
         m_uploadHeap->BeginUploadToGpu(dstData, 0, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, AsByteSpan(srcData, static_cast<size_t>(srcDataSize)));
+        FlushUploadsIfReady();
 
         return S_OK;
         }
         ORT_CATCH_RETURN
+    }
+
+    void ExecutionProviderImpl::FlushUploadsIfReady() const
+    {
+        // Periodically flush uploads to make sure the GPU is not idle for too long
+        if (std::chrono::steady_clock::now() - m_lastUploadFlushTime > m_batchFlushInterval)
+        {
+            Flush();
+            m_lastUploadFlushTime = std::chrono::steady_clock::now();
+        }
     }
 
     uint32_t ExecutionProviderImpl::GetSupportedDeviceDataTypeMask() const
@@ -615,13 +638,31 @@ namespace Dml
 
     bool IsCpuOnDmlOperator(const onnxruntime::Node& node)
     {
-        auto sequence_ops = std::array<char*, 6>{
+        auto cpuOnDmlOperators = std::array<char*, 8>{
             "SequenceAt",
             "SequenceConstruct",
             "SequenceEmpty",
             "SequenceLength",
             "SequenceErase",
             "SequenceInsert",
+            "OptionalGetElement",
+            "OptionalHasElement"
+        };
+
+        for (auto& cpuOnDmlOperator : cpuOnDmlOperators)
+        {
+            if (strcmp(cpuOnDmlOperator, node.OpType().c_str()) == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    bool IsDmlSequenceOperator(const onnxruntime::Node& node)
+    {
+        auto sequence_ops = std::array<char*, 1>{
+            "ConcatFromSequence"
         };
 
         for (auto& sequence_op : sequence_ops)
@@ -634,10 +675,29 @@ namespace Dml
         return false;
     }
 
+    bool IsCustomOpShader(const onnxruntime::Node& node)
+    {
+        auto custom_ops = std::array<char*, 3>{
+            "DFT",
+            "STFT",
+            "GridSample"
+        };
+
+        for (auto& custom_op : custom_ops)
+        {
+            if (strcmp(custom_op, node.OpType().c_str()) == 0)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     bool DoesNodeContainSupportedDataTypes(
         const onnxruntime::Node& node,
         _In_opt_ const InternalRegistrationInfo* regInfo,
-        uint32_t supportedDeviceDataTypeMask // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
+        uint32_t supportedDeviceDataTypeMask, // Each bit corresponds to each DML_TENSOR_DATA_TYPE.
+        bool native16BitShaderOpsSupported
         )
     {
         std::vector<onnxruntime::NodeArg const*> constantCpuInputs;
@@ -682,10 +742,21 @@ namespace Dml
                 return;
             }
 
-            // Allow nodeArgs that are SequenceTensor when they are actually implemented by CPU Kernels.
-            if (edgeType == MLOperatorEdgeType::SequenceTensor && IsCpuOnDmlOperator(node))
+            if (onnxElementType == MLOperatorTensorDataType::Float16 &&
+                !native16BitShaderOpsSupported &&
+                IsCustomOpShader(node))
             {
-                // Leave nodeContainsSupportedDataTypes alone.
+                nodeContainsSupportedDataTypes = false;
+                return;
+            }
+
+            // Allow nodeArgs that are SequenceTensor when they are actually implemented by CPU Kernels.
+            if (edgeType == MLOperatorEdgeType::SequenceTensor)
+            {
+                if (!IsCpuOnDmlOperator(node) && !IsDmlSequenceOperator(node))
+                {
+                    nodeContainsSupportedDataTypes = false;
+                }
                 return;
             }
 
@@ -749,7 +820,7 @@ namespace Dml
         }
 
         // Check whether the node uses any data types which are unsupported by the device.
-        if (!DoesNodeContainSupportedDataTypes(node, internalRegInfo.get(), supportedDeviceDataTypeMask))
+        if (!DoesNodeContainSupportedDataTypes(node, internalRegInfo.get(), supportedDeviceDataTypeMask, m_native16BitShaderOpsSupported))
         {
             return false;
         }

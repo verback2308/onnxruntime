@@ -34,6 +34,9 @@ void CreateArgMaxOpBuilder(const std::string& op_type, OpBuilderRegistrations& o
 void CreateCastOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
 void CreateFlattenOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
 void CreateLRNOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
+void CreatePadOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
+void CreateUnaryOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
+void CreateReductionOpBuilder(const std::string& op_type, OpBuilderRegistrations& op_registrations);
 
 }  // namespace coreml
 }  // namespace onnxruntime

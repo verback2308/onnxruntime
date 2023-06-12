@@ -127,21 +127,21 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
 
   if (helper.OutputOffsets().size() == 1) {
     CUBLAS_RETURN_IF_ERROR(cublasGemmHelper(
-                               GetCublasHandle(ctx),
-                               transB,
-                               transA,
-                               static_cast<int>(helper.N()),
-                               static_cast<int>(helper.M()),
-                               static_cast<int>(helper.K()),
-                               &alpha,
-                               reinterpret_cast<const CudaT*>(right_X->Data<T>()),
-                               ldb,
-                               reinterpret_cast<const CudaT*>(left_X->Data<T>()),
-                               lda,
-                               &zero,
-                               reinterpret_cast<CudaT*>(Y->MutableData<T>()),
-                               ldc,
-                               device_prop));
+        GetCublasHandle(ctx),
+        transB,
+        transA,
+        static_cast<int>(helper.N()),
+        static_cast<int>(helper.M()),
+        static_cast<int>(helper.K()),
+        &alpha,
+        reinterpret_cast<const CudaT*>(right_X->Data<T>()),
+        ldb,
+        reinterpret_cast<const CudaT*>(left_X->Data<T>()),
+        lda,
+        &zero,
+        reinterpret_cast<CudaT*>(Y->MutableData<T>()),
+        ldc,
+        device_prop));
     return Status::OK();
   } else if (CanUseStridedBatchedGemm(left_X->Shape(), right_X->Shape(),
                                       transa, transb, trans_batch_a_, trans_batch_b_, stride_A, stride_B, stride_C, batch_count)) {
@@ -180,25 +180,33 @@ Status MatMul<T>::ComputeInternal(OpKernelContext* ctx) const {
   ORT_RETURN_IF_ERROR(right_arrays.CopyToGpu(ctx->GetComputeStream()));
   ORT_RETURN_IF_ERROR(output_arrays.CopyToGpu(ctx->GetComputeStream()));
 
+  // TF32 provides a huge performance gain for training and inference while preserving FP32 levels of accuracy.
+  // It requires Ampere or newer GPU, and pointers of matrics shall be aligned (ideal alignment is 16-byte).
+  // Assume that start memory of input/output tensor is aligned, we only check offsets of sub-matrix per batch here.
+  cublasMath_t mode = (std::is_same<T, float>::value && device_prop.major >= 8 && helper.IsBatchedGemmAligned())
+                          ? CUBLAS_TF32_TENSOR_OP_MATH
+                          : CUBLAS_DEFAULT_MATH;
+  CublasMathModeSetter math_mode_setter(device_prop, GetCublasHandle(ctx), mode);
+
   // note that onnxruntime OrtValue is row major, while cublas is column major,
   // so swap left/right operands
   CUBLAS_RETURN_IF_ERROR(cublasGemmBatchedHelper(
-                             GetCublasHandle(ctx),
-                             transB,
-                             transA,
-                             static_cast<int>(helper.N()),
-                             static_cast<int>(helper.M()),
-                             static_cast<int>(helper.K()),
-                             &alpha,
-                             right_arrays.GpuPtr(),
-                             ldb,
-                             left_arrays.GpuPtr(),
-                             lda,
-                             &zero,
-                             output_arrays.GpuPtr(),
-                             ldc,
-                             static_cast<int>(helper.OutputOffsets().size()),
-                             device_prop));
+      GetCublasHandle(ctx),
+      transB,
+      transA,
+      static_cast<int>(helper.N()),
+      static_cast<int>(helper.M()),
+      static_cast<int>(helper.K()),
+      &alpha,
+      right_arrays.GpuPtr(),
+      ldb,
+      left_arrays.GpuPtr(),
+      lda,
+      &zero,
+      output_arrays.GpuPtr(),
+      ldc,
+      static_cast<int>(helper.OutputOffsets().size()),
+      device_prop));
 
   return Status::OK();
 }

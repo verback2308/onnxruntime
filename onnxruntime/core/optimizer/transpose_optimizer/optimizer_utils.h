@@ -6,6 +6,7 @@
 #include "optimizer_api.h"
 #include "core/graph/graph.h"
 #include "core/framework/execution_provider.h"
+#include "core/framework/transform_layout_functions.h"
 
 namespace onnxruntime {
 /// <summary>
@@ -83,7 +84,12 @@ const std::unordered_set<std::string_view>& GetORTLayoutSensitiveOps();
 /// <param name="graph">graph to transform</param>
 /// <param name="modified">indicates whether the graph is modified during transformation</param>
 /// <param name="execution_provider">execution provider for which the transformation needs to be performed</param>
-Status TransformLayoutForEP(Graph& graph, bool& modified, const IExecutionProvider& execution_provider);
+/// <param name="cpu_allocator">a CPU allocator used in layout transformation.
+/// <param name="debug_graph_fn">Optional functor to debug the graph produced during layout transformation.
+/// This is called after layout transformation if new nodes are inserted, and again after those are optimized.
+/// </param>
+Status TransformLayoutForEP(Graph& graph, bool& modified, const IExecutionProvider& execution_provider,
+                            AllocatorPtr cpu_allocator, const DebugGraphFn& debug_graph_fn = {});
 
 /// <summary>
 /// Checks if the opset of the Graph is supported by the layout transformer.

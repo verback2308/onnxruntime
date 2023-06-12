@@ -15,11 +15,11 @@ namespace qnn {
 OpBuilderRegistrations::OpBuilderRegistrations() {
   {
     CreateSimpleOpBuilder("Add", *this);
+    CreateSimpleOpBuilder("Atan", *this);
     CreateSimpleOpBuilder("Mul", *this);
     CreateSimpleOpBuilder("Abs", *this);
     CreateSimpleOpBuilder("And", *this);
     CreateSimpleOpBuilder("Ceil", *this);
-    CreateSimpleOpBuilder("Cast", *this);
     CreateSimpleOpBuilder("Cos", *this);
     CreateSimpleOpBuilder("Div", *this);
     CreateSimpleOpBuilder("Equal", *this);
@@ -39,11 +39,8 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateSimpleOpBuilder("Pow", *this);
     CreateSimpleOpBuilder("PRelu", *this);
     CreateSimpleOpBuilder("Relu", *this);
-    CreateSimpleOpBuilder("ReduceMax", *this);
-    CreateSimpleOpBuilder("ReduceMean", *this);
-    CreateSimpleOpBuilder("ReduceMin", *this);
-    CreateSimpleOpBuilder("ReduceProd", *this);
-    CreateSimpleOpBuilder("ReduceSum", *this);
+    CreateSimpleOpBuilder("Gelu", *this);
+    CreateSimpleOpBuilder("Elu", *this);
     CreateSimpleOpBuilder("Round", *this);
     CreateSimpleOpBuilder("Where", *this);
     CreateSimpleOpBuilder("Sigmoid", *this);
@@ -57,6 +54,23 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
     CreateSimpleOpBuilder("LogSoftmax", *this);
     CreateSimpleOpBuilder("MatMul", *this);
     CreateSimpleOpBuilder("Concat", *this);
+
+    CreateSimpleOpBuilder("QuantizeLinear", *this);
+    CreateSimpleOpBuilder("DequantizeLinear", *this);
+
+    CreateSimpleOpBuilder("HardSwish", *this);
+  }
+
+  {
+    CreateCastOpBuilder("Cast", *this);
+  }
+
+  {
+    CreateReduceOpBuilder("ReduceMax", *this);
+    CreateReduceOpBuilder("ReduceMean", *this);
+    CreateReduceOpBuilder("ReduceMin", *this);
+    CreateReduceOpBuilder("ReduceProd", *this);
+    CreateReduceOpBuilder("ReduceSum", *this);
   }
 
   {
@@ -65,12 +79,8 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
   {
     CreatePoolOpBuilder("GlobalAveragePool", *this);
+    CreatePoolOpBuilder("AveragePool", *this);
     CreatePoolOpBuilder("MaxPool", *this);
-  }
-
-  {
-    CreateQdqOpBuilder("QuantizeLinear", *this);
-    CreateQdqOpBuilder("DequantizeLinear", *this);
   }
 
   {
@@ -123,6 +133,14 @@ OpBuilderRegistrations::OpBuilderRegistrations() {
 
   {
     CreateInstanceNormOpBuilder("InstanceNormalization", *this);
+  }
+
+  {
+    CreateBatchNormOpBuilder("BatchNormalization", *this);
+  }
+
+  {
+    CreateLRNOpBuilder("LRN", *this);
   }
 }
 

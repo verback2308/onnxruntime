@@ -43,6 +43,10 @@
 #include "orttraining/training_ops/cpu/controlflow/group.h"
 #include "orttraining/training_ops/cpu/optimizer/adamw/adamwbase.h"
 #include "orttraining/training_ops/cpu/optimizer/sgd/sgdbase.h"
+
+// Should remove the include from ENABLE_TRAINING_OPS once 1). compute optimizer is enabled for inference or
+// 2). this is needed by inference for other purpose.
+#include "contrib_ops/cpu/tensor/shrunken_gather.h"
 #endif
 
 #ifdef ENABLE_TRAINING
@@ -155,6 +159,18 @@ template <>
 MLDataType DataTypeImpl::GetType<BFloat16>() { return Provider_GetHost()->DataTypeImpl__GetType_BFloat16(); }
 template <>
 MLDataType DataTypeImpl::GetType<MLFloat16>() { return Provider_GetHost()->DataTypeImpl__GetType_MLFloat16(); }
+
+#if !defined(DISABLE_FLOAT8_TYPES)
+template <>
+MLDataType DataTypeImpl::GetType<Float8E4M3FN>() { return Provider_GetHost()->DataTypeImpl__GetType_Float8E4M3FN(); }
+template <>
+MLDataType DataTypeImpl::GetType<Float8E4M3FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetType_Float8E4M3FNUZ(); }
+template <>
+MLDataType DataTypeImpl::GetType<Float8E5M2>() { return Provider_GetHost()->DataTypeImpl__GetType_Float8E5M2(); }
+template <>
+MLDataType DataTypeImpl::GetType<Float8E5M2FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetType_Float8E5M2FNUZ(); }
+#endif
+
 template <>
 MLDataType DataTypeImpl::GetType<std::string>() { return Provider_GetHost()->DataTypeImpl__GetType_string(); }
 template <>
@@ -183,6 +199,17 @@ template <>
 MLDataType DataTypeImpl::GetTensorType<BFloat16>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_BFloat16(); }
 template <>
 MLDataType DataTypeImpl::GetTensorType<MLFloat16>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_MLFloat16(); }
+
+#if !defined(DISABLE_FLOAT8_TYPES)
+template <>
+MLDataType DataTypeImpl::GetTensorType<Float8E4M3FN>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_Float8E4M3FN(); }
+template <>
+MLDataType DataTypeImpl::GetTensorType<Float8E4M3FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_Float8E4M3FNUZ(); }
+template <>
+MLDataType DataTypeImpl::GetTensorType<Float8E5M2>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_Float8E5M2(); }
+template <>
+MLDataType DataTypeImpl::GetTensorType<Float8E5M2FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetTensorType_Float8E5M2FNUZ(); }
+#endif
 
 #if !defined(DISABLE_SPARSE_TENSORS)
 template <>
@@ -213,6 +240,18 @@ template <>
 MLDataType DataTypeImpl::GetSparseTensorType<BFloat16>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_BFloat16(); }
 template <>
 MLDataType DataTypeImpl::GetSparseTensorType<MLFloat16>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_MLFloat16(); }
+
+#if !defined(DISABLE_FLOAT8_TYPES)
+template <>
+MLDataType DataTypeImpl::GetSparseTensorType<Float8E4M3FN>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_Float8E4M3FN(); }
+template <>
+MLDataType DataTypeImpl::GetSparseTensorType<Float8E4M3FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_Float8E4M3FNUZ(); }
+template <>
+MLDataType DataTypeImpl::GetSparseTensorType<Float8E5M2>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_Float8E5M2(); }
+template <>
+MLDataType DataTypeImpl::GetSparseTensorType<Float8E5M2FNUZ>() { return Provider_GetHost()->DataTypeImpl__GetSparseTensorType_Float8E5M2FNUZ(); }
+#endif
+
 #endif
 
 Status IDataTransfer::CopyTensor(const Tensor& src, Tensor& dst) const {
@@ -647,6 +686,9 @@ Status AdamWOptimizerBase::PrepareForCompute(OpKernelContext* ctx, AdamWOptimize
 Status SGDOptimizerV2Base::PrepareForCompute(OpKernelContext* ctx, SGDOptimizerV2Base::Prepare& prepare) const {
   return g_host_cpu.contrib__SGDOptimizerV2Base__PrepareForCompute(this, ctx, reinterpret_cast<contrib__SGDOptimizerV2Base__Prepare&>(prepare));
 }
+void ShrunkenGatherCommon::CheckInput(const Tensor* input_tensor, const Tensor* indices_tensor, int64_t axis_in) const {
+  return g_host_cpu.contrib__ShrunkenGatherCommon__CheckInput(this, input_tensor, indices_tensor, axis_in);
+}
 }  // namespace contrib
 #endif
 
@@ -690,6 +732,10 @@ void RefCountTracker::DumpDetails(const std::string& phase_name) const {
 
 #if defined(USE_CANN)
 RandomGenerator& RandomGenerator::Default() { return g_host->RandomGenerator__Default(); }
+void* AllocateBufferWithOptions(IAllocator& allocator, size_t size, bool use_reserve, Stream* stream,
+                                WaitNotificationFn wait_fn) {
+  return g_host->Allocator__AllocateBufferWithOptions(allocator, size, use_reserve, stream, wait_fn);
+}
 
 namespace cann {
 std::unique_ptr<Model> CreateModel(const GraphViewer& graph_viewer, const logging::Logger& logger) {
@@ -702,9 +748,19 @@ void MurmurHash3::x86_128(const void* key, int len, uint32_t seed, void* out) {
   return g_host->MurmurHash3__x86_128(key, len, seed, out);
 }
 
+#if !defined(ORT_MINIMAL_BUILD) || defined(ORT_MINIMAL_BUILD_CUSTOM_OPS)
+Status LoadDynamicLibrary(onnxruntime::PathString library_name) {
+  return g_host->LoadDynamicLibrary(library_name);
+}
+#endif
+
 #ifdef _WIN32
 std::string ToUTF8String(const std::wstring& s) {
   return g_host->ToUTF8String(s);
+}
+
+std::wstring ToWideString(const std::string& s) {
+  return g_host->ToWideString(s);
 }
 #endif
 }  // namespace onnxruntime

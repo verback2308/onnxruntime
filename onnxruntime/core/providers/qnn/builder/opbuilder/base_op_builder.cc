@@ -98,7 +98,6 @@ Status BaseOpBuilder::ProcessInput(QnnModelWrapper& qnn_model_wrapper,
                                    const logging::Logger& logger,
                                    bool is_quantized_model,
                                    std::vector<std::string>& input_names) const {
-
   const auto& input_name = input.node_arg.Name();
 
   if (qnn_model_wrapper.IsQnnTensorWrapperExist(input_name)) {
@@ -121,7 +120,7 @@ Status BaseOpBuilder::ProcessInput(QnnModelWrapper& qnn_model_wrapper,
   bool is_initializer_input = qnn_model_wrapper.IsInitializerInput(input_name);
   if (is_initializer_input) {
     const auto& input_tensor = qnn_model_wrapper.GetInitializerTensors().at(input_name);
-    ORT_RETURN_IF_ERROR(onnxruntime::utils::UnpackInitializerData(*input_tensor, unpacked_tensor));
+    ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(*input_tensor, unpacked_tensor));
   }
 
   Qnn_TensorType_t tensor_type = GetInputTensorType(qnn_model_wrapper, input_name);
@@ -147,7 +146,8 @@ Status BaseOpBuilder::ProcessInputs(QnnModelWrapper& qnn_model_wrapper,
   ORT_UNUSED_PARAMETER(do_op_validation);
 
   const auto& inputs = node_unit.Inputs();
-  for (size_t input_i = 0; input_i < inputs.size(); ++input_i) {
+  const auto input_count = GetInputCountQnnRequired(node_unit);
+  for (size_t input_i = 0; input_i < input_count; ++input_i) {
     ORT_RETURN_IF_ERROR(ProcessInput(qnn_model_wrapper, inputs[input_i], logger, is_quantized_model, input_names));
   }
 
@@ -165,7 +165,8 @@ Status BaseOpBuilder::ProcessAttributesAndOutputs(QnnModelWrapper& qnn_model_wra
   }
 
   ORT_RETURN_IF_ERROR(ProcessOutputs(qnn_model_wrapper, node_unit, std::move(input_names), {},
-                                     logger, is_quantized_model, do_op_validation));
+                                     logger, is_quantized_model, do_op_validation,
+                                     GetQnnOpType(node_unit.OpType())));
   return Status::OK();
 }
 
@@ -175,12 +176,12 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
                                      std::vector<std::string>&& param_tensor_names,
                                      const logging::Logger& logger,
                                      bool is_quantized_model,
-                                     bool do_op_validation) const {
+                                     bool do_op_validation,
+                                     const std::string& qnn_op_type) const {
   ORT_UNUSED_PARAMETER(logger);
   // Add output
   // Output part is common for all Ops, only difference is the Op attribute
   const auto& outputs = node_unit.Outputs();
-  auto output_size = outputs.size();
   std::vector<std::string> output_names;
   struct CastNodeInfo {
     std::string node_name;
@@ -189,7 +190,8 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
   };
   std::vector<CastNodeInfo> cast_node_info_vec;
 
-  for (size_t output_i = 0; output_i < output_size && output_i < output_count_; ++output_i) {
+  const auto output_count = GetOutputCountQnnRequired(node_unit);
+  for (size_t output_i = 0; output_i < output_count; ++output_i) {
     const auto& output_name = outputs[output_i].node_arg.Name();
 
     Qnn_QuantizeParams_t quantize_param = QNN_QUANTIZE_PARAMS_INIT;
@@ -234,7 +236,7 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
 
   ORT_RETURN_IF_NOT(qnn_model_wrapper.CreateQnnNode(GetNodeName(node_unit),
                                                     qnn_def::package_name,
-                                                    GetQnnOpType(node_unit.OpType()),
+                                                    qnn_op_type,  // Typically GetQnnOpType(), but can be overridden.
                                                     std::move(input_names),
                                                     std::move(output_names),
                                                     std::move(param_tensor_names),
@@ -253,13 +255,14 @@ Status BaseOpBuilder::ProcessOutputs(QnnModelWrapper& qnn_model_wrapper,
   return Status::OK();
 }
 
-Status BaseOpBuilder::TransposeInitializer(const onnx::TensorProto& initializer,
+Status BaseOpBuilder::TransposeInitializer(const QnnModelWrapper& qnn_model_wrapper,
+                                           const onnx::TensorProto& initializer,
                                            const std::vector<size_t>& perm,
-                                           const AllocatorPtr& cpu_allocator,
                                            std::vector<uint8_t>& transposed_data) const {
   const DataTypeImpl* tensor_dtype = DataTypeImpl::TensorTypeFromONNXEnum(initializer.data_type())->GetElementType();
   const auto tensor_shape_dims = onnxruntime::utils::GetTensorShapeFromTensorProto(initializer);
   TensorShape tensor_shape{tensor_shape_dims};
+  AllocatorPtr cpu_allocator = std::make_shared<CPUAllocator>();
   Tensor in_tensor = Tensor(tensor_dtype, tensor_shape, cpu_allocator);
 
   auto rank = perm.size();
@@ -277,7 +280,7 @@ Status BaseOpBuilder::TransposeInitializer(const onnx::TensorProto& initializer,
   ORT_RETURN_IF_ERROR(onnxruntime::utils::TensorProtoToTensor(Env::Default(), nullptr, initializer, in_tensor));
   ORT_RETURN_IF_ERROR(Transpose::DoTranspose(permutations, in_tensor, out_tensor));
   onnx::TensorProto new_tensor_proto = onnxruntime::utils::TensorToTensorProto(out_tensor, "test");
-  ORT_RETURN_IF_ERROR(onnxruntime::utils::UnpackInitializerData(new_tensor_proto, transposed_data));
+  ORT_RETURN_IF_ERROR(qnn_model_wrapper.UnpackInitializerData(new_tensor_proto, transposed_data));
 
   return Status::OK();
 }
