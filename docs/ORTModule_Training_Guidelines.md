@@ -158,7 +158,7 @@ inspection results to standard outputs.
 	export ORTMODULE_PRINT_INPUT_DENSITY=0 # Disable
 	```
 
-	#### ORTMODULE_ENABLE_EMBEDDING_SPARSE_OPTIMIZER
+#### ORTMODULE_ENABLE_EMBEDDING_SPARSE_OPTIMIZER
 
 - **Feature Area**: *ORTMODULE/Optimizations*
 - **Description**: By default, this is disabled. This env var can be used for enabling or disabling the embedding input
