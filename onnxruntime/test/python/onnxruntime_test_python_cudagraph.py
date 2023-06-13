@@ -14,20 +14,20 @@ class CudaGraphHelper:
     def __init__(
         self,
         ort_session: onnxrt.InferenceSession,
-        io_shape: Dict[str, List[int]],
+        input_and_output_shape: Dict[str, List[int]],
         device_id: int = 0,
     ):
         self.input_names = [input.name for input in ort_session.get_inputs()]
         self.output_names = [output.name for output in ort_session.get_outputs()]
 
-        self.io_shape = io_shape
+        self.input_and_output_shape = input_and_output_shape
         self.io_numpy_type = self.get_io_numpy_type_map(ort_session)
         self.io_binding = ort_session.io_binding()
         self.io_ort_value = {}
 
         for name in self.input_names + self.output_names:
             ort_value = onnxrt.OrtValue.ortvalue_from_shape_and_type(
-                io_shape[name], self.io_numpy_type[name], "cuda", device_id
+                input_and_output_shape[name], self.io_numpy_type[name], "cuda", device_id
             )
             self.io_ort_value[name] = ort_value
             if name in self.input_names:
@@ -117,40 +117,41 @@ class TestInferenceSessionWithCudaGraph(unittest.TestCase):
                 atol=1e-05,
             )
 
-    def testMinimalRunsWithCudaGraph(self):
+    def testRunsWithCudaGraph2(self):
         if "CUDAExecutionProvider" in onnxrt.get_available_providers():
             providers = [
                 ("CUDAExecutionProvider", {"enable_cuda_graph": True, "arena_extend_strategy": "kSameAsRequested"})
             ]
             test_model_path = get_name("squeezenet/model.onnx")
 
-            io_shape = {
-                "data_0": [1, 3, 224, 224],
-                "softmaxout_1": [1, 1000, 1, 1],
+            input_and_output_shape = {
+                "data_0": [16, 3, 224, 224],
+                "softmaxout_1": [16, 1000, 1, 1],
             }
 
-            # TODO: set arena intial chunk size to a small value when there is python API for that.
-            # In this way, this test could easily detect whether there is memory allocation during cuda graph catpure.
+            # TODO: set arena initial chunk size to a small value when there is Python API for that.
+            # In this way, it is easy to reproduce memory allocation during cuda graph catpure.
             # Right now, we can manually change DEFAULT_INITIAL_CHUNK_SIZE_BYTES = 64 in core/framework/bfc_arena.h
-            # to verify that minimal 2 runs is required for capture
-            session = onnxrt.InferenceSession(test_model_path, providers=providers)
-            inputs = {"data_0": np.random.randint(0, 256, size=[1, 3, 224, 224]).astype(np.float32)}
-            expected_output = session.run(None, inputs)[0]
 
-            cuda_graph_helper = CudaGraphHelper(session, io_shape)
-            inputs = {"data_0": np.ones(io_shape["data_0"], dtype=np.float32)}
-            cuda_graph_helper.update_inputs(inputs)
+            session = onnxrt.InferenceSession(test_model_path, providers=providers)
+
+            cuda_graph_helper = CudaGraphHelper(session, input_and_output_shape)
+            io_binding = cuda_graph_helper.io_binding
+
+            # Create a random input for testing.
+            np.random.seed(0)
+            inputs = {"data_0": np.random.randint(0, 256, size=input_and_output_shape["data_0"]).astype(np.float32)}
 
             # One regular run for the necessary memory allocation and cuda graph capturing
-            io_binding = cuda_graph_helper.io_binding
+            cuda_graph_helper.update_inputs(inputs)
             session.run_with_iobinding(io_binding)
-            output = cuda_graph_helper.get_output("softmaxout_1")
-            print(output)
-            np.testing.assert_allclose(expected_output, output, rtol=1e-02, atol=1e-02)
+            expected_output = cuda_graph_helper.get_output("softmaxout_1")
 
             # After capturing, CUDA graph replay happens from this Run onwards
+            cuda_graph_helper.update_inputs(inputs)
             session.run_with_iobinding(io_binding)
             output = cuda_graph_helper.get_output("softmaxout_1")
+
             np.testing.assert_allclose(expected_output, output, rtol=1e-02, atol=1e-02)
 
 
